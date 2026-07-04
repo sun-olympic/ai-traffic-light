@@ -15,7 +15,10 @@ const tagName = `v${version}`;
 let token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 if (!token) {
   try {
-    const creds = execSync('echo -e "protocol=https\\nhost=github.com" | git credential fill', { encoding: 'utf8' });
+    const creds = execSync('git credential fill', {
+      input: 'protocol=https\nhost=github.com\n\n',
+      encoding: 'utf8'
+    });
     const match = creds.match(/password=(.+)/);
     if (match) {
       token = match[1].trim();
