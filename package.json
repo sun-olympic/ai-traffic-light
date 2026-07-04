@@ -1,0 +1,47 @@
+{
+  "name": "ai-traffic-light",
+  "version": "0.1.0",
+  "description": "AI 会话红绿灯：常驻桌面悬浮窗，实时显示 Cursor 等 AI 工具会话的运行/等待/异常状态",
+  "private": true,
+  "main": "dist/main/index.js",
+  "author": "sunqilei",
+  "license": "MIT",
+  "build": {
+    "appId": "com.sunqilei.ai-traffic-light",
+    "productName": "AI Traffic Light",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "assets/**/*",
+      "hook-scripts/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.main.json && tsc -p tsconfig.renderer.json && node scripts/copy-renderer.mjs",
+    "start": "npm run build && electron .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dist": "npm run build && electron-builder --mac"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  },
+  "dependencies": {
+    "chokidar": "^5.0.0"
+  }
+}

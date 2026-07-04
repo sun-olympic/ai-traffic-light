@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "moduleDetection": "auto",
+    "noEmit": false
+  },
+  "include": ["src/renderer/*.ts"]
+}

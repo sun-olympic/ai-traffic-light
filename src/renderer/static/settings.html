@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'" />
+    <link rel="stylesheet" href="settings.css" />
+    <title>Settings</title>
+  </head>
+  <body>
+    <main>
+      <h1 data-i18n="title"></h1>
+
+      <section>
+        <h2 data-i18n="sec_thresholds"></h2>
+        <label><span data-i18n="approval_threshold"></span><input type="number" id="approvalThresholdSec" min="3" max="600" /> s</label>
+        <label><span data-i18n="stuck_threshold"></span><input type="number" id="stuckThresholdMin" min="1" max="60" /> min</label>
+      </section>
+
+      <section>
+        <h2 data-i18n="sec_lists"></h2>
+        <label class="col"><span data-i18n="shell_whitelist"></span><textarea id="shellWhitelist" rows="3"></textarea></label>
+        <label class="col"><span data-i18n="mcp_whitelist"></span><textarea id="mcpWhitelist" rows="2"></textarea></label>
+        <label class="col"><span data-i18n="question_words"></span><textarea id="questionWords" rows="2"></textarea></label>
+      </section>
+
+      <section>
+        <h2 data-i18n="sec_behavior"></h2>
+        <label><input type="checkbox" id="includeBackgroundAgents" /><span data-i18n="include_bg"></span></label>
+        <label><input type="checkbox" id="fastGreenReadSignal" /><span data-i18n="fast_green"></span></label>
+        <label><input type="checkbox" id="breathingAnimation" /><span data-i18n="breathing"></span></label>
+        <label><input type="checkbox" id="systemNotification" /><span data-i18n="sys_notif"></span></label>
+        <label><input type="checkbox" id="soundAlert" /><span data-i18n="sound_alert"></span></label>
+        <label><span data-i18n="language"></span>
+          <select id="language">
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+          </select>
+        </label>
+      </section>
+
+      <section>
+        <h2 data-i18n="sec_sounds"></h2>
+        <div class="sound-row">
+          <span data-i18n="yellow_sound"></span>
+          <button id="preview-yellow" data-i18n="preview"></button>
+          <button id="custom-yellow" data-i18n="upload"></button>
+          <button id="reset-yellow" data-i18n="reset"></button>
+        </div>
+        <div class="sound-row">
+          <span data-i18n="red_sound"></span>
+          <button id="preview-red" data-i18n="preview"></button>
+          <button id="custom-red" data-i18n="upload"></button>
+          <button id="reset-red" data-i18n="reset"></button>
+        </div>
+      </section>
+
+      <section>
+        <h2 data-i18n="sec_health"></h2>
+        <div id="health"></div>
+        <div class="sound-row">
+          <button id="hooks-install" data-i18n="install_hooks"></button>
+          <button id="hooks-uninstall" data-i18n="uninstall_hooks"></button>
+        </div>
+      </section>
+
+      <section>
+        <h2 data-i18n="sec_codex"></h2>
+        <div id="codex-health"></div>
+        <div class="sound-row">
+          <button id="codex-install" data-i18n="install_hooks"></button>
+          <button id="codex-uninstall" data-i18n="uninstall_hooks"></button>
+          <button id="codex-trust-terminal" data-i18n="codex_open_terminal"></button>
+        </div>
+        <div id="codex-guide" class="hint"></div>
+      </section>
+
+      <section>
+        <h2 data-i18n="sec_qoder"></h2>
+        <div id="qoder-health"></div>
+      </section>
+
+      <section>
+        <h2 data-i18n="sec_antigravity"></h2>
+        <div id="antigravity-health"></div>
+      </section>
+    </main>
+    <script src="../settings.js"></script>
+  </body>
+</html>

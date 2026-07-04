@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; media-src 'self' file:" />
+    <link rel="stylesheet" href="style.css" />
+    <title>AI Traffic Light</title>
+  </head>
+  <body>
+    <div id="widget">
+      <div id="traffic-light" title="">
+        <div class="lamp red" id="lamp-red"><span class="badge" id="badge-red"></span></div>
+        <div class="lamp yellow" id="lamp-yellow"><span class="badge" id="badge-yellow"></span></div>
+        <div class="lamp green" id="lamp-green"><span class="badge" id="badge-green"></span></div>
+      </div>
+      <div id="toast" hidden></div>
+      <div id="degraded-dot" hidden title=""></div>
+      <div id="panel" hidden>
+        <ul id="session-list"></ul>
+      </div>
+    </div>
+    <script src="../widget.js"></script>
+  </body>
+</html>

@@ -1,0 +1,92 @@
+body {
+  margin: 0;
+  font-family: -apple-system, "PingFang SC", sans-serif;
+  background: #1d1e24;
+  color: #d9dae1;
+  font-size: 13px;
+}
+
+main {
+  padding: 18px 22px 30px;
+}
+
+h1 {
+  font-size: 17px;
+}
+
+h2 {
+  font-size: 13px;
+  color: #9fa1ad;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding-bottom: 4px;
+}
+
+section {
+  margin-bottom: 18px;
+}
+
+label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+label.col {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+input[type="number"] {
+  width: 70px;
+}
+
+input, textarea, select, button {
+  background: #2a2b33;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #e6e7ee;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover {
+  background: #3a3b45;
+}
+
+.sound-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+#health,
+#codex-health {
+  line-height: 1.8;
+  color: #9fa1ad;
+}
+
+#health .bad,
+#codex-health .bad {
+  color: #ff9800;
+}
+
+#codex-health .ok {
+  color: #7bc86c;
+}
+
+.hint {
+  color: #9fa1ad;
+  line-height: 1.7;
+  white-space: pre-line;
+  font-size: 12px;
+}
