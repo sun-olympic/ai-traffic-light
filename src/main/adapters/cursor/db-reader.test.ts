@@ -133,6 +133,36 @@ describe("CursorDbReader", () => {
     expect(reader.recentSessions(5)).toEqual([]);
   });
 
+  test("composerHeader：从 ItemTable 大 JSON 中按 composerId 提取 blocking 与 checkpointAt", () => {
+    seed([]); // 建 cursorDiskKV 保证库文件存在
+    const db = new DatabaseSync(dbPath);
+    db.exec("CREATE TABLE IF NOT EXISTS ItemTable (key TEXT PRIMARY KEY, value TEXT)");
+    db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)").run(
+      "composer.composerHeaders",
+      JSON.stringify({
+        allComposers: [
+          { composerId: "c1", hasBlockingPendingActions: true, conversationCheckpointLastUpdatedAt: 123 },
+          { composerId: "c2", hasBlockingPendingActions: false, conversationCheckpointLastUpdatedAt: 456 },
+        ],
+      }),
+    );
+    db.close();
+    const reader = new CursorDbReader(dbPath);
+    expect(reader.composerHeader("c1")).toEqual({ blocking: true, checkpointAt: 123 });
+    expect(reader.composerHeader("c2")).toEqual({ blocking: false, checkpointAt: 456 });
+    expect(reader.composerHeader("nope")).toBeNull();
+    reader.close();
+  });
+
+  test("composerHeader：ItemTable 缺失时返回 null 且不降级气泡通路", () => {
+    seed([bubble("c1", "b1", { name: "ask_question", status: "loading" })]);
+    const reader = new CursorDbReader(dbPath);
+    expect(reader.composerHeader("c1")).toBeNull();
+    expect(reader.latestBubbles("c1", 1)).toHaveLength(1); // 气泡通路不受影响
+    expect(reader.isAvailable()).toBe(true);
+    reader.close();
+  });
+
   test("以只读模式打开（写入抛错）", () => {
     seed([bubble("c1", "b1", { name: "ask_question", status: "loading" })]);
     const reader = new CursorDbReader(dbPath);

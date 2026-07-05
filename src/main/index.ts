@@ -187,7 +187,7 @@ const tracker = new SessionTracker({
         ? qoderPoller.probeSnapshot(sessionId)
         : tool === "antigravity"
           ? agyPoller.probeSnapshot(sessionId)
-          : snapshotFromBubbles(reader.isAvailable() ? reader.latestBubbles(sessionId, 6) : null),
+          : snapshotFromBubbles(reader.isAvailable() ? reader.latestBubbles(sessionId, 6) : null, reader.composerHeader(sessionId)),
   resolveStop: (tool, sessionId, transcriptPath) =>
     tool === "codex" ? resolveCodexStop(CODEX_SESSIONS_DIR, sessionId, transcriptPath ?? codexRolloutPath(sessionId)) : null,
   isToolAlive,

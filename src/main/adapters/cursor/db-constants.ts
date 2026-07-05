@@ -42,6 +42,19 @@ export const RECENT_SESSIONS_SQL = `
   ORDER BY lastUpdatedAt DESC
   LIMIT ?`;
 
+/**
+ * composerHeaders 会话头（ItemTable 单键大 JSON，2026-07-05 实测）：
+ * hasBlockingPendingActions 弹窗挂起标志（作答后 ~3s 翻 false，远快于气泡 pending 翻转的惰性落库）；
+ * conversationCheckpointLastUpdatedAt 会话检查点时间（作答/编辑时前进）。
+ * json_each 在 SQLite 内展开，避免 100KB+ 整块 JSON 每 tick 进 JS。
+ */
+export const COMPOSER_HEADER_SQL = `
+  SELECT json_extract(j.value, '$.hasBlockingPendingActions')           AS blocking,
+         json_extract(j.value, '$.conversationCheckpointLastUpdatedAt') AS checkpointAt
+  FROM ItemTable, json_each(json_extract(ItemTable.value, '$.allComposers')) AS j
+  WHERE ItemTable.key = 'composer.composerHeaders'
+    AND json_extract(j.value, '$.composerId') = ?`;
+
 /** 挂起等待（提问/审批）的统一判据字段值（实验实测，design.md Context 8/9） */
 export const PENDING_ADDITIONAL_STATUS = "pending";
 export const REVIEW_REQUESTED = "Requested";

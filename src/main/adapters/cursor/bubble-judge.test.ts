@@ -106,12 +106,33 @@ describe("snapshotFromBubbles（2.3：气泡行 → 工具无关快照）", () =
 
   test("pending ask 快照：pending=question、非执行中、非卡死", () => {
     const snap = snapshotFromBubbles([row({ toolName: "ask_question", status: "completed", additionalStatus: "pending" })]);
-    expect(snap).toEqual({
+    expect(snap).toMatchObject({
       pending: { kind: "question_pending" },
       executing: false,
       stuckCandidate: false,
       missedQuestion: false,
     });
+  });
+
+  test("headers 信号透出：blockingPending 跟随 header，changeToken 覆盖最新气泡与 header", () => {
+    const rows = [row({ toolName: "ask_question", status: "completed", additionalStatus: "pending" })];
+    const open = snapshotFromBubbles(rows, { blocking: true, checkpointAt: 100 });
+    expect(open?.blockingPending).toBe(true);
+    const answered = snapshotFromBubbles(rows, { blocking: false, checkpointAt: 200 });
+    expect(answered?.blockingPending).toBe(false);
+    // header 变化（blocking 翻转 / checkpoint 前进）必须反映到 changeToken
+    expect(open?.changeToken).not.toBe(answered?.changeToken);
+    // 最新气泡变化（key 或字段翻转）也必须反映到 changeToken
+    const flushed = snapshotFromBubbles([row({ key: "bubbleId:c1:b2", toolName: "ask_question", status: "completed", userDecision: "accepted", additionalStatus: "submitted" })], { blocking: false, checkpointAt: 200 });
+    expect(flushed?.changeToken).not.toBe(answered?.changeToken);
+  });
+
+  test("无 header（结构变化/键缺失）：blockingPending=undefined，token 仍随气泡变化", () => {
+    const a = snapshotFromBubbles([row({ key: "k1", toolName: "generate_image", status: "loading" })]);
+    const b = snapshotFromBubbles([row({ key: "k2", toolName: "generate_image", status: "loading" })]);
+    expect(a?.blockingPending).toBeUndefined();
+    expect(a?.changeToken).toBeDefined();
+    expect(a?.changeToken).not.toBe(b?.changeToken);
   });
 
   test("执行中气泡快照：executing=true 且 stuckCandidate=true（卡死由 tracker 计时定罪）", () => {

@@ -3,7 +3,7 @@
 import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
-import { BUBBLE_RANGE_SQL, bubbleRangeParams, COMPOSER_DATA_SQL, composerDataParams, RECENT_SESSIONS_SQL } from "./db-constants";
+import { BUBBLE_RANGE_SQL, bubbleRangeParams, COMPOSER_DATA_SQL, composerDataParams, COMPOSER_HEADER_SQL, RECENT_SESSIONS_SQL } from "./db-constants";
 
 export interface BubbleRow {
   key: string;
@@ -18,6 +18,14 @@ export interface BubbleRow {
 export interface SessionMeta {
   name: string | null;
   createdAt: number | null;
+}
+
+/** composerHeaders 会话头信号：作答即清与思考活性判定的补充证据（气泡通路的落库滞后补救） */
+export interface ComposerHeader {
+  /** 阻塞对话框（AskQuestion 等）当前挂起 */
+  blocking: boolean;
+  /** 会话检查点最后更新时间（作答/编辑时前进） */
+  checkpointAt: number | null;
 }
 
 /** 平台默认 DB 路径（design.md D7a） */
@@ -86,6 +94,23 @@ export class CursorDbReader {
       // 表/字段结构变化（Cursor 升级）或连接失效 → 降级并允许重试恢复
       this.markUnavailable();
       return [];
+    }
+  }
+
+  /**
+   * composerHeaders 信号（增强通路）：失败只返回 null（"无此信号"），不降级气泡通路——
+   * ItemTable/headers 键属另一套结构，缺失或变化不代表气泡查询也坏了。
+   */
+  composerHeader(sessionId: string): ComposerHeader | null {
+    const db = this.handle();
+    if (!db) return null;
+    try {
+      const row = db.prepare(COMPOSER_HEADER_SQL).get(sessionId) as { blocking: unknown; checkpointAt: number | null } | undefined;
+      if (!row) return null;
+      // SQLite json_extract 的布尔以 0/1 返回
+      return { blocking: row.blocking === 1 || row.blocking === true, checkpointAt: row.checkpointAt ?? null };
+    } catch {
+      return null;
     }
   }
 

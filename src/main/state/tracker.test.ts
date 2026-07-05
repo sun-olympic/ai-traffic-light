@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { SessionTracker, type TrackerDeps } from "./tracker";
 import { DEFAULT_CONFIG, type AppConfig } from "../../shared/config";
-import type { BubbleRow } from "../adapters/cursor/db-reader";
+import type { BubbleRow, ComposerHeader } from "../adapters/cursor/db-reader";
 import { snapshotFromBubbles } from "../adapters/cursor/bubble-judge";
 import type { TrafficEvent } from "../../shared/events";
 
 let now: number;
 let bubbles: BubbleRow[] | null;
+let header: ComposerHeader | null;
 let alive: boolean;
 let transcript: string | null;
 let notifications: Array<{ kind: string; sessionId: string }>;
@@ -18,7 +19,7 @@ function deps(config: Partial<AppConfig> = {}): TrackerDeps {
     clock: () => now,
     registry: { cursor: { yellow: "exact", red: "exact", metadata: true } },
     // Cursor 探针通路：气泡行 → 工具无关快照（判定器已下沉 Cursor adapter）
-    probe: () => snapshotFromBubbles(bubbles),
+    probe: () => snapshotFromBubbles(bubbles, header),
     isToolAlive: () => alive,
     readTranscript: () => transcript,
     notify: (kind, session) => notifications.push({ kind, sessionId: session.sessionId }),
@@ -44,6 +45,7 @@ const DONE_TOOL = [bubble({ toolName: "run_terminal_command_v2", status: "comple
 beforeEach(() => {
   now = 1_783_100_000_000;
   bubbles = [];
+  header = null;
   alive = true;
   transcript = null;
   notifications = [];
@@ -233,6 +235,105 @@ describe("错过提问标记（3.2a）", () => {
     const t2 = new SessionTracker(deps());
     t2.handleEvent(ev("prompt"));
     expect(t2.sessions()[0].missedQuestion).toBe(false);
+  });
+});
+
+describe("作答即清与令牌活性（Thinking 误报修复）", () => {
+  /** 进入 waiting(question)：pending ask + headers 尚未写入（blocking=false、旧 checkpoint） */
+  function toQuestionYellow(t: SessionTracker): void {
+    t.handleEvent(ev("prompt"));
+    bubbles = PENDING_ASK;
+    header = { blocking: false, checkpointAt: 100 };
+    now += 6000;
+    t.tick(); // 令牌基线在本 tick 建立
+    expect(t.sessions()[0].waitingKind).toBe("question");
+  }
+
+  test("作答即清：气泡仍 pending（落盘滞后），但 blocking=false 且令牌在黄灯后变过 → 立即回 running", () => {
+    const t = new SessionTracker(deps());
+    toQuestionYellow(t);
+    // 弹窗挂起被 headers 观测到（token 变化但 blocking=true → 不清）
+    header = { blocking: true, checkpointAt: 100 };
+    now += 2000;
+    t.tick();
+    expect(t.sessions()[0].waitingKind).toBe("question");
+    // 作答：blocking 翻 false + checkpoint 前进；气泡仍是 pending（尚未落盘）
+    header = { blocking: false, checkpointAt: 200 };
+    now += 2000;
+    t.tick();
+    expect(t.sessions()[0].state).toBe("running");
+  });
+
+  test("headers 未写入窗口不误清：blocking=false 但令牌无变化 → 黄灯保持", () => {
+    const t = new SessionTracker(deps());
+    toQuestionYellow(t);
+    now += 2000;
+    t.tick(); // 气泡与 headers 均无变化
+    now += 2000;
+    t.tick();
+    expect(t.sessions()[0].waitingKind).toBe("question");
+  });
+
+  test("作答即清后补查错过提问：气泡落盘为非 accepted → 打标记并提醒", () => {
+    const t = new SessionTracker(deps());
+    toQuestionYellow(t);
+    header = { blocking: false, checkpointAt: 200 };
+    now += 2000;
+    t.tick(); // 作答即清
+    expect(t.sessions()[0].state).toBe("running");
+    bubbles = EXPIRED_ASK; // 落盘揭示：其实是自动跳过
+    now += 2000;
+    t.tick();
+    expect(t.sessions()[0].missedQuestion).toBe(true);
+    expect(notifications.some((n) => n.kind === "missed_question")).toBe(true);
+  });
+
+  test("作答即清后补查：正常 accepted 落盘不打标记", () => {
+    const t = new SessionTracker(deps());
+    toQuestionYellow(t);
+    header = { blocking: false, checkpointAt: 200 };
+    now += 2000;
+    t.tick();
+    bubbles = ANSWERED_ASK;
+    now += 2000;
+    t.tick();
+    expect(t.sessions()[0].missedQuestion).toBe(false);
+    expect(notifications.some((n) => n.kind === "missed_question")).toBe(false);
+  });
+
+  test("长思考不误报无活动：令牌持续变化（思考分批落库）→ 超阈值不亮 inactive", () => {
+    const t = new SessionTracker(deps({ inactiveThresholdMs: 10_000 }));
+    t.handleEvent(ev("prompt"));
+    for (let i = 0; i < 10; i++) {
+      bubbles = [bubble({ key: `k${i}`, toolName: null })]; // 思考文本气泡分批落库
+      now += 2000;
+      t.tick();
+    }
+    expect(t.sessions()[0].state).toBe("running"); // 20s > 10s 阈值，但令牌一直在动
+    // 令牌冻结（真无产出）→ 从最后一次变更起算超阈值才亮
+    for (let i = 0; i < 6; i++) {
+      now += 2000;
+      t.tick();
+    }
+    expect(t.sessions()[0].waitingKind).toBe("inactive");
+  });
+
+  test("思考落库活性重置卡死计时：令牌变化期间 loading 气泡不定罪，冻结后才亮 stuck", () => {
+    const t = new SessionTracker(deps({ stuckThresholdMs: 10_000, inactiveThresholdMs: 3600_000 }));
+    t.handleEvent(ev("prompt"));
+    for (let i = 0; i < 10; i++) {
+      // 最新工具气泡 loading（卡死候选）+ 会话 checkpoint 持续前进（仍在产出）
+      bubbles = RUNNING_TOOL;
+      header = { blocking: false, checkpointAt: 100 + i };
+      now += 2000;
+      t.tick();
+    }
+    expect(t.sessions()[0].state).toBe("running");
+    for (let i = 0; i < 6; i++) {
+      now += 2000;
+      t.tick(); // 令牌冻结，12s > 10s 阈值
+    }
+    expect(t.sessions()[0].waitingKind).toBe("stuck");
   });
 });
 

@@ -46,6 +46,13 @@ export interface ProbeSnapshot {
   stuckCandidate: boolean;
   /** 提问已结束且未被采纳（错过提问） */
   missedQuestion: boolean;
+  /** 工具自身的"阻塞对话框挂起"标志（Cursor composerHeaders）；undefined = 通道无此信号 */
+  blockingPending?: boolean;
+  /**
+   * 状态库观测变更令牌（不透明字符串）：跨 tick 变化 = 工具状态库仍在产出
+   * （思考文本分批落库也算活性）。tracker 据此实现作答即清、抑制无活动/卡死误报。
+   */
+  changeToken?: string;
   /**
    * 会话已达终态但状态机未收到 stop（D4 保险丝：codex 中断/错误/拒绝审批均无 Stop hook，
    * probe 读 rollout 尾行发现终态时带回）；tracker 据此注入合成 stop 事件。

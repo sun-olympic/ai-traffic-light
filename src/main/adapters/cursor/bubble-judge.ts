@@ -4,7 +4,7 @@
 // 挂起等待 = additionalData.status="pending"（bubble status 在挂起 30s 后会翻 completed，不可靠）；
 // 挂起初期存在 additionalData 为空的过渡窗口，此时 ask_question 的 status=loading 仍可判提问。
 import { ASK_QUESTION_TOOL, DECISION_ACCEPTED, PENDING_ADDITIONAL_STATUS, REVIEW_REQUESTED } from "./db-constants";
-import type { BubbleRow } from "./db-reader";
+import type { BubbleRow, ComposerHeader } from "./db-reader";
 import type { ProbeResult, ProbeSnapshot } from "../adapter";
 
 /** rowid 倒序结果中的最新工具气泡（跳过普通消息气泡） */
@@ -62,12 +62,16 @@ export function judgeExecuting(rows: BubbleRow[]): boolean {
 }
 
 /** Cursor 探针通路出口：气泡行 → 工具无关快照；null（DB 不可用）原样透传为降级信号 */
-export function snapshotFromBubbles(rows: BubbleRow[] | null): ProbeSnapshot | null {
+export function snapshotFromBubbles(rows: BubbleRow[] | null, header?: ComposerHeader | null): ProbeSnapshot | null {
   if (rows === null) return null;
+  const top = rows[0];
   return {
     pending: judgePending(rows),
     executing: judgeExecuting(rows),
     stuckCandidate: judgeStuck(rows),
     missedQuestion: judgeMissedQuestion(rows),
+    blockingPending: header ? header.blocking : undefined,
+    // 令牌覆盖：最新气泡（新增/字段翻转）+ headers（弹窗标志翻转/检查点前进），任一变化即视为活性
+    changeToken: `${top?.key ?? ""}|${top?.status ?? ""}|${top?.additionalStatus ?? ""}|${header?.blocking ?? ""}|${header?.checkpointAt ?? ""}`,
   };
 }

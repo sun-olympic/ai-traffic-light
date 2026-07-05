@@ -54,10 +54,22 @@ interface Tracked {
   wakeResetAt: number;
   /** 过渡窗口提问（tentative）首次探测到的时间，持续超过确认期才亮黄 */
   askTentativeSince: number | null;
+  /** 探针变更令牌与最近变更时刻：变化 = 工具状态库仍在产出（思考分批落库也算活性） */
+  lastToken: string | null;
+  lastTokenChangeAt: number;
+  /** 作答即清后的错过提问补查窗口截止（气泡落盘滞后，作答与自动跳过要等落盘才可分辨） */
+  missedCheckUntil: number;
 }
 
 /** tentative 提问确认期：气泡建库比弹窗展示早约 2s，短于此时长不亮黄；4s 实测偏晚 */
 const ASK_TENTATIVE_CONFIRM_MS = 2000;
+
+/**
+ * 作答即清后的错过提问补查窗口：清灯依据 headers（作答后 ~3s 翻转），但 accepted/自动跳过
+ * 要等气泡落盘（实测常随下一个工具调用批量写入，思考越久越晚）才可分辨。
+ * ponytail: 窗口内若事件流一直不静默则探针不跑、补查可能漏掉——错过提问本就是尽力而为的辅助标记
+ */
+const MISSED_CHECK_WINDOW_MS = 120_000;
 
 const NO_CAPABILITIES: CapabilityFlags = { yellow: "none", red: "none", metadata: false };
 
@@ -109,7 +121,7 @@ export class SessionTracker {
     let t = this.tracked.get(k);
     if (!t) {
       const caps = this.deps.registry[ev.tool] ?? NO_CAPABILITIES;
-      t = { machine: new SessionMachine(ev.tool, ev.sessionId, caps), pendingExec: null, stuckSince: null, lastStopTs: 0, note: null, wakeResetAt: 0, askTentativeSince: null };
+      t = { machine: new SessionMachine(ev.tool, ev.sessionId, caps), pendingExec: null, stuckSince: null, lastStopTs: 0, note: null, wakeResetAt: 0, askTentativeSince: null, lastToken: null, lastTokenChangeAt: 0, missedCheckUntil: 0 };
       this.tracked.set(k, t);
     }
     t.note = null;
@@ -201,7 +213,7 @@ export class SessionTracker {
 
     // 审批等待：before_exec 后静默超阈值且不在白名单
     if (m.state === "running" && t.pendingExec && now - t.pendingExec.ts > this.config.approvalThresholdMs && !this.isWhitelisted(t.pendingExec)) {
-      snap = this.probe(m);
+      snap = this.probe(t);
       // 探针明确显示执行中 → 慢命令而非等审批，不亮黄，逐 tick 复查；
       // 真审批的 pending 字段有 ~15s 写入延迟（早期同样显示执行中），翻转后下个 tick 即亮黄；
       // 通道降级/证据不足 → 维持启发式亮黄（宁可误报不漏报）
@@ -216,7 +228,7 @@ export class SessionTracker {
     const needProbe = (m.state === "running" && quiet) || (m.state === "waiting" && (m.waitingKind === "question" || m.waitingKind === "stuck" || m.waitingKind === "approval" || m.waitingKind === "user_action"));
     if (!needProbe) return;
 
-    if (snap === undefined) snap = this.probe(m);
+    if (snap === undefined) snap = this.probe(t);
     if (snap === null) {
       // 探针通道降级：精确黄灯停用，仅保留无活动兜底
       this.judgeInactive(t, now);
@@ -236,10 +248,28 @@ export class SessionTracker {
       return;
     }
 
+    // 作答即清后的错过提问补查：清灯时气泡尚未落盘，落盘后才能分辨 accepted 与自动跳过
+    if (t.missedCheckUntil > 0) {
+      if (snap.missedQuestion) {
+        t.missedCheckUntil = 0;
+        this.markMissed(m, now);
+      } else if (now > t.missedCheckUntil) {
+        t.missedCheckUntil = 0;
+      }
+    }
+
     const pending = snap.pending;
     if (m.state === "waiting" && m.waitingKind === "question" && pending.kind !== "question_pending") {
       // 提问结束：检查是否被自动处理（错过提问）
       if (snap.missedQuestion) this.markMissed(m, now);
+      m.clearWaiting(now);
+      return;
+    }
+    // 作答即清（2026-07-05 实测）：作答标记随 Cursor 惰性批量落库，思考期间气泡长期滞留 pending；
+    // headers 的 blocking 在作答后 ~3s 翻 false，且检查点/令牌必有一次变更。要求"令牌在黄灯亮起
+    // 之后变过"排除 headers 尚未写入 blocking=true 的窗口（那时令牌停在提问之前）。
+    if (m.state === "waiting" && m.waitingKind === "question" && snap.blockingPending === false && t.lastTokenChangeAt > m.stateSince) {
+      t.missedCheckUntil = now + MISSED_CHECK_WINDOW_MS;
       m.clearWaiting(now);
       return;
     }
@@ -283,20 +313,36 @@ export class SessionTracker {
     }
   }
 
-  /** 兜底判定：running 且长时间无任何事件（turn 挂起等后台任务、stop 未触发等），对用户与卡死无异，软黄灯提醒 */
+  /**
+   * 兜底判定：running 且长时间无任何事件（turn 挂起等后台任务、stop 未触发等），对用户与卡死无异，软黄灯提醒。
+   * 令牌变更时刻计入基准：长思考零 hook 事件，但思考文本会分批落库（2026-07-05 实测），不算无活动
+   */
   private judgeInactive(t: Tracked, now: number): void {
     const m = t.machine;
     if (m.state !== "running") return;
-    if (now - Math.max(m.lastEventAt, t.wakeResetAt) > this.config.inactiveThresholdMs) {
+    if (now - Math.max(m.lastEventAt, t.wakeResetAt, t.lastTokenChangeAt) > this.config.inactiveThresholdMs) {
       m.setWaiting("inactive", now);
     }
   }
 
-  private probe(m: SessionMachine): ProbeSnapshot | null {
+  private probe(t: Tracked): ProbeSnapshot | null {
+    const m = t.machine;
     const snap = this.deps.probe(m.tool, m.sessionId);
     // 随最近一次探测结果实时刷新：通道恢复（如后启动的 Cursor/Codex 建好库）后自动解除降级
-    if (snap === null) this.degradedTools.add(m.tool);
-    else this.degradedTools.delete(m.tool);
+    if (snap === null) {
+      this.degradedTools.add(m.tool);
+      return null;
+    }
+    this.degradedTools.delete(m.tool);
+    // 令牌变更 = 状态库仍在产出（思考分批落库也算）：刷新活性时刻并重置卡死计时。
+    // 首次观测只建基线不计时，避免冷启动首个探测被当成活动
+    if (snap.changeToken !== undefined && snap.changeToken !== t.lastToken) {
+      if (t.lastToken !== null) {
+        t.lastTokenChangeAt = this.deps.clock();
+        t.stuckSince = null;
+      }
+      t.lastToken = snap.changeToken;
+    }
     return snap;
   }
 
