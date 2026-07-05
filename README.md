@@ -63,7 +63,7 @@ scripts/      构建辅助脚本
 
 ## 打包与 Gatekeeper
 
-`npm run dist` 产出 `release/AI Traffic Light-<版本>-arm64.dmg`。安装包**未签名/未公证**，首次打开 macOS 会拦截：
+`npm run dist` 产出 `release/ai-traffic-light-<版本>-mac-arm64.dmg`（文件名不含空格：GitHub 上传会把空格改成点，导致 electron-builder 查重失败重复建 Release）。安装包**未签名/未公证**，首次打开 macOS 会拦截：
 
 - 方式一：右键 App → 打开 → 再点「打开」；
 - 方式二：`xattr -dr com.apple.quarantine "/Applications/AI Traffic Light.app"`。

@@ -16,6 +16,7 @@
     "directories": {
       "output": "release"
     },
+    "artifactName": "ai-traffic-light-${version}-${os}-${arch}.${ext}",
     "publish": {
       "provider": "github",
       "releaseType": "release"
