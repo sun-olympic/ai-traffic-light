@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { antigravityBackendAlive, anyProcessMatches, codexProcessAlive, ANTIGRAVITY_PROCESS_PATTERNS, CODEX_PROCESS_PATTERNS, CURSOR_PROCESS_PATTERNS, QODER_PROCESS_PATTERNS } from "./process-liveness";
+import { antigravityBackendAlive, antigravityProcessAlive, anyProcessMatches, codexProcessAlive, cursorProcessAlive, parseTasklist, qoderProcessAlive, ANTIGRAVITY_PROCESS_PATTERNS, CODEX_PROCESS_PATTERNS, CURSOR_PROCESS_PATTERNS, QODER_PROCESS_PATTERNS } from "./process-liveness";
 
 const PS_WITH_DESKTOP = [
   "/sbin/launchd",
@@ -89,5 +89,51 @@ describe("Antigravity 进程存活匹配（D14 app 壳与 language_server 两层
 describe("Cursor 进程匹配（既有行为回归）", () => {
   test("Cursor 主进程存活 → true", () => {
     expect(anyProcessMatches("/Applications/Cursor.app/Contents/MacOS/Cursor", CURSOR_PROCESS_PATTERNS)).toBe(true);
+  });
+});
+
+describe("Windows 进程存活（tasklist 镜像名，逐行大小写不敏感精确匹配）", () => {
+  const WIN_TABLE = ["System", "svchost.exe", "Cursor.exe", "node.exe"].join("\n");
+
+  test("cursor：Cursor.exe 命中（大小写不敏感）", () => {
+    expect(cursorProcessAlive(WIN_TABLE, "win32")).toBe(true);
+    expect(cursorProcessAlive("system\ncursor.exe", "win32")).toBe(true);
+    expect(cursorProcessAlive("System\nCursorHelper.exe", "win32")).toBe(false);
+  });
+
+  test("codex：codex.exe 与 npm 原生二进制 codex-*.exe 命中，噪音不误配", () => {
+    expect(codexProcessAlive("svchost.exe\ncodex.exe", "win32")).toBe(true);
+    expect(codexProcessAlive("codex-x86_64-pc-windows-msvc.exe", "win32")).toBe(true);
+    expect(codexProcessAlive("svchost.exe\nnode.exe", "win32")).toBe(false);
+    expect(codexProcessAlive("mycodex.exe", "win32")).toBe(false);
+  });
+
+  test("qoder：Qoder.exe 命中", () => {
+    expect(qoderProcessAlive("Qoder.exe\nsvchost.exe", "win32")).toBe(true);
+    expect(qoderProcessAlive(WIN_TABLE, "win32")).toBe(false);
+  });
+
+  test("antigravity：Windows 未支持，恒 false（含后端）", () => {
+    expect(antigravityProcessAlive("Antigravity.exe", "win32")).toBe(false);
+    expect(antigravityBackendAlive("language_server_windows_x64.exe", "win32")).toBe(false);
+  });
+
+  test("mac 平台走既有路径特征（默认参数回归）", () => {
+    expect(cursorProcessAlive("/Applications/Cursor.app/Contents/MacOS/Cursor", "darwin")).toBe(true);
+    expect(qoderProcessAlive("/Applications/Qoder.app/Contents/MacOS/Electron", "darwin")).toBe(true);
+    expect(antigravityProcessAlive("/Applications/Antigravity.app/Contents/MacOS/Antigravity", "darwin")).toBe(true);
+    expect(codexProcessAlive("/opt/homebrew/bin/codex", "darwin")).toBe(true);
+  });
+});
+
+describe("parseTasklist（CSV 无表头 → 镜像名每行一个）", () => {
+  test("取每行第一个引号字段", () => {
+    const csv = ['"Cursor.exe","1234","Console","1","123,456 K"', '"svchost.exe","456","Services","0","9,876 K"'].join("\r\n");
+    expect(parseTasklist(csv)).toBe("Cursor.exe\nsvchost.exe");
+  });
+
+  test("空输出与畸形行安全跳过", () => {
+    expect(parseTasklist("")).toBe("");
+    expect(parseTasklist("INFO: No tasks found.\n")).toBe("");
   });
 });

@@ -33,10 +33,18 @@ export interface QoderSnapshot {
 
 export type QoderHealth = "not_detected" | "ok" | "degraded";
 
-/** 平台默认存储路径；第一版仅支持 macOS，其余平台返回 null（= not detected） */
+/**
+ * 平台默认存储路径；macOS 实测，Windows 按 VS Code 派生应用惯例（%APPDATA%/Qoder）推测。
+ * ponytail: Windows 路径无真机实样，猜错时健康态落 not_detected，不影响其他工具
+ */
 export function defaultQoderDbPath(): string | null {
-  if (process.platform !== "darwin") return null;
-  return path.join(os.homedir(), "Library/Application Support/Qoder/User/globalStorage/state.vscdb");
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library/Application Support/Qoder/User/globalStorage/state.vscdb");
+  }
+  if (process.platform === "win32") {
+    return path.join(process.env.APPDATA ?? path.join(os.homedir(), "AppData/Roaming"), "Qoder/User/globalStorage/state.vscdb");
+  }
+  return null;
 }
 
 const STATUS_MAP: Record<string, QoderStatus> = {

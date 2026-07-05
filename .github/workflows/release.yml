@@ -1,5 +1,6 @@
-# 打包发布：推 v* 标签 → 测试 + electron-builder 打 mac 包（dmg/zip）并发布到 GitHub Release；
+# 打包发布：推 v* 标签 → 测试 + electron-builder 打 mac（dmg/zip）+ win（nsis/zip）包并发布到 GitHub Release；
 # 手动触发（workflow_dispatch）只打包上传为构建产物，不发 Release。
+# win job 串行在 mac 之后：两个 job 并发向同一 tag 创建 Release 会竞态。
 name: Release
 
 on:
@@ -35,3 +36,28 @@ jobs:
           path: |
             release/*.dmg
             release/*-mac.zip
+
+  build-win:
+    runs-on: windows-latest
+    needs: build-mac
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Package (publish to Release on tag)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run dist:win -- --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
+      - uses: actions/upload-artifact@v4
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        with:
+          name: win-dist
+          path: |
+            release/*.exe
+            release/*-win.zip

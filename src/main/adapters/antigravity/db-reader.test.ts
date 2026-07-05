@@ -74,7 +74,8 @@ describe("readSteps（D12 锁安全只读访问）", () => {
     expect(readSteps(candidate(p))).toEqual({ ok: false, reason: "unreadable" });
   });
 
-  test("权限拒绝 → permission_denied", () => {
+  // Windows 无 POSIX 权限位，chmod 000 不生效
+  test.skipIf(process.platform === "win32")("权限拒绝 → permission_denied", () => {
     const p = makeDb("s5.db", { rows: [[0, 14, 3, null]] });
     chmodSync(p, 0o000);
     try {

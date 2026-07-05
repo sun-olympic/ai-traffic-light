@@ -3,3 +3,5 @@ dist/
 release/
 *.log
 .DS_Store
+build/icon.iconset/
+build/icon-preview.png

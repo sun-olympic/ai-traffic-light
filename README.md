@@ -46,6 +46,7 @@ npm install        # 安装依赖
 npm test           # 运行单测（vitest）
 npm start          # 构建并启动
 npm run dist       # macOS 打包（electron-builder）
+npm run dist:win   # Windows 打包（nsis/zip；需在 Windows 上执行或走 CI）
 ```
 
 技术栈：Electron + TypeScript（主/渲染进程均为原生 TS，无前端框架）、Node 内置 `node:sqlite`（只读打开 Cursor DB，零原生依赖）、chokidar（事件文件监听）、vitest（单测）。
@@ -66,6 +67,10 @@ scripts/      构建辅助脚本
 
 - 方式一：右键 App → 打开 → 再点「打开」；
 - 方式二：`xattr -dr com.apple.quarantine "/Applications/AI Traffic Light.app"`。
+
+## Windows 支持（实验性）
+
+CI 会同时产出 Windows 安装包（`*.exe` nsis / `*-win.zip`）。Cursor、Codex 通道完整支持（DB 路径、hooks、进程检测已适配 `tasklist`）；Qoder 路径按 `%APPDATA%/Qoder` 惯例推测、未经真机验证；Antigravity 暂不支持（健康页显示未检测到）。安装包同样未签名，SmartScreen 首次运行需点「仍要运行」。
 
 ## 安装 hooks
 

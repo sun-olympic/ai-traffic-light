@@ -115,7 +115,8 @@ describe("rotateIfNeeded", () => {
 });
 
 describe("ensureSecureDir", () => {
-  test("目录 700、事件文件 600", () => {
+  // Windows 无 POSIX 权限位，mode 断言不成立
+  test.skipIf(process.platform === "win32")("目录 700、事件文件 600", () => {
     ensureSecureDir(home);
     const f = join(home, "events.jsonl");
     appendFileSync(f, line("s1", "prompt"), { mode: 0o600 });

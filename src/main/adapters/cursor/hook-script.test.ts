@@ -118,7 +118,8 @@ describe("cursor hook 采集脚本", () => {
     expect(eventsOf(dir)).toHaveLength(0);
   });
 
-  test("目录不可写：仍输出 {} 且退出码 0", () => {
+  // Windows 无 POSIX 权限位，chmod 400 不生效
+  test.skipIf(process.platform === "win32")("目录不可写：仍输出 {} 且退出码 0", () => {
     const dir = mkdtempSync(join(tmpdir(), "tl-"));
     chmodSync(dir, 0o400);
     try {

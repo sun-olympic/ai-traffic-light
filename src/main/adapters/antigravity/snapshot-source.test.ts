@@ -85,7 +85,8 @@ describe("AntigravitySnapshotSource（组合快照 + 健康 + 退避）", () => 
     expect(s.health()).toBe("schema_mismatch");
   });
 
-  test("权限拒绝 → permission_denied（健康态而非无会话，D24）", () => {
+  // Windows 无 POSIX 权限位，chmod 000 不生效
+  test.skipIf(process.platform === "win32")("权限拒绝 → permission_denied（健康态而非无会话，D24）", () => {
     const p = makeDb("locked.db", [[0, 14, 3, null]]);
     chmodSync(p, 0o000);
     try {

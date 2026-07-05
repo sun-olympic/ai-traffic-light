@@ -20,7 +20,7 @@ import { antigravitySafeName, AntigravitySnapshotSource } from "./adapters/antig
 import { AntigravityPoller } from "./adapters/antigravity/poller";
 import { AntigravityTitleReader } from "./adapters/antigravity/summary-titles";
 import { readAntigravityTranscriptTail } from "./adapters/antigravity/transcript-tail";
-import { antigravityBackendAlive, anyProcessMatches, codexProcessAlive, ANTIGRAVITY_PROCESS_PATTERNS, CURSOR_PROCESS_PATTERNS, QODER_PROCESS_PATTERNS, readProcessTable } from "./process-liveness";
+import { antigravityBackendAlive, antigravityProcessAlive, codexProcessAlive, cursorProcessAlive, qoderProcessAlive, readProcessTable } from "./process-liveness";
 import { EventFileWatcher, ensureSecureDir, rotateIfNeeded } from "./event-file";
 import { loadMarks, persistMarks } from "./state/marks-store";
 import { SessionTracker, type NotifyKind, type SessionView } from "./state/tracker";
@@ -85,15 +85,15 @@ function enabledHookEvents(): readonly string[] {
   return config.fastGreenReadSignal ? HOOK_EVENTS : HOOK_EVENTS.filter((e) => e !== "beforeReadFile");
 }
 
-// 进程存活缓存：一次 ps 输出喂所有工具的特征匹配（不用 pgrep：-x/-f 依赖读进程 argv，受限环境漏报）
-const TOOL_MATCHERS: Record<string, (psComm: string) => boolean> = {
-  cursor: (t) => anyProcessMatches(t, CURSOR_PROCESS_PATTERNS),
+// 进程存活缓存：一次进程表输出（mac ps / win tasklist）喂所有工具的特征匹配
+const TOOL_MATCHERS: Record<string, (table: string) => boolean> = {
+  cursor: (t) => cursorProcessAlive(t),
   // codex 需覆盖 PATH 安装（Homebrew/npm），不能只认 App 包路径
-  codex: codexProcessAlive,
-  qoder: (t) => anyProcessMatches(t, QODER_PROCESS_PATTERNS),
-  antigravity: (t) => anyProcessMatches(t, ANTIGRAVITY_PROCESS_PATTERNS),
-  // 伪工具通道：Antigravity 后端单独判定（D14 健康分层），复用同一份 ps 缓存
-  antigravity_backend: antigravityBackendAlive,
+  codex: (t) => codexProcessAlive(t),
+  qoder: (t) => qoderProcessAlive(t),
+  antigravity: (t) => antigravityProcessAlive(t),
+  // 伪工具通道：Antigravity 后端单独判定（D14 健康分层），复用同一份进程表缓存
+  antigravity_backend: (t) => antigravityBackendAlive(t),
 };
 let aliveCache: { at: number; byTool: Record<string, boolean> } = { at: 0, byTool: {} };
 function isToolAlive(tool: string): boolean {
@@ -152,14 +152,18 @@ async function codexHealth() {
   return { state, installed: st.installed, detail: st.detail, disabled, trusted: trust.trusted, alive, lastEventAt: lastCodexEventAt };
 }
 
-/** codex CLI 启动命令：PATH 里有用短名，否则回落桌面 App 内置二进制（design D6） */
+/** codex CLI 启动命令：PATH 里有用短名，否则回落桌面 App 内置二进制（design D6；win 用 where 探测） */
 function codexCliCommand(): string {
   try {
-    execFileSync("/bin/zsh", ["-lc", "command -v codex"], { timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    if (process.platform === "win32") {
+      execFileSync("where", ["codex"], { timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    } else {
+      execFileSync("/bin/zsh", ["-lc", "command -v codex"], { timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    }
     return "codex";
   } catch {
     const bundled = "/Applications/Codex.app/Contents/Resources/codex";
-    return fs.existsSync(bundled) ? bundled : "codex";
+    return process.platform === "darwin" && fs.existsSync(bundled) ? bundled : "codex";
   }
 }
 
@@ -509,7 +513,11 @@ function registerIpc(): void {
   // 一键打开终端预填 codex 启动命令，用户在 TUI 内跑 /hooks 完成信任（App 无法代跑，design D6）
   ipcMain.handle("codexTrust:terminal", () => {
     const cmd = codexCliCommand();
-    execFile("osascript", ["-e", `tell application "Terminal" to do script ${JSON.stringify(cmd)}`, "-e", 'tell application "Terminal" to activate']);
+    if (process.platform === "win32") {
+      execFile("cmd", ["/c", "start", "", "cmd", "/k", cmd]);
+    } else {
+      execFile("osascript", ["-e", `tell application "Terminal" to do script ${JSON.stringify(cmd)}`, "-e", 'tell application "Terminal" to activate']);
+    }
     return { command: cmd };
   });
   ipcMain.handle("health:get", async () => ({
