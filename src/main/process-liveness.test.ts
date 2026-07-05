@@ -48,22 +48,23 @@ describe("Codex 进程存活匹配（完整路径特征）", () => {
   });
 });
 
+// mac 行为回归：显式钉死 platform="darwin"，测试本身可在任意平台（含 Windows CI）运行
 describe("codexProcessAlive（覆盖 PATH 安装）", () => {
   test("Homebrew/PATH 二进制（basename=codex）→ true", () => {
-    expect(codexProcessAlive("/sbin/launchd\n/opt/homebrew/bin/codex\n/usr/libexec/trustd")).toBe(true);
+    expect(codexProcessAlive("/sbin/launchd\n/opt/homebrew/bin/codex\n/usr/libexec/trustd", "darwin")).toBe(true);
   });
 
   test("npm 原生二进制（codex-<arch>-<platform>）→ true", () => {
-    expect(codexProcessAlive("/Users/x/.npm-global/lib/node_modules/@openai/codex/vendor/codex-aarch64-apple-darwin")).toBe(true);
+    expect(codexProcessAlive("/Users/x/.npm-global/lib/node_modules/@openai/codex/vendor/codex-aarch64-apple-darwin", "darwin")).toBe(true);
   });
 
   test("App 包路径仍然命中", () => {
-    expect(codexProcessAlive(PS_WITH_DESKTOP)).toBe(true);
+    expect(codexProcessAlive(PS_WITH_DESKTOP, "darwin")).toBe(true);
   });
 
   test("codex.system 系统路径与普通进程不误配", () => {
-    expect(codexProcessAlive(PS_ONLY_NOISE)).toBe(false);
-    expect(codexProcessAlive("/sbin/launchd\n/usr/libexec/trustd")).toBe(false);
+    expect(codexProcessAlive(PS_ONLY_NOISE, "darwin")).toBe(false);
+    expect(codexProcessAlive("/sbin/launchd\n/usr/libexec/trustd", "darwin")).toBe(false);
   });
 });
 
@@ -81,8 +82,8 @@ describe("Antigravity 进程存活匹配（D14 app 壳与 language_server 两层
   });
 
   test("backend 单独判定：只有 app 壳时 backend=false（健康分层用）", () => {
-    expect(antigravityBackendAlive("/Applications/Antigravity.app/Contents/MacOS/Antigravity")).toBe(false);
-    expect(antigravityBackendAlive("/Applications/Antigravity.app/Contents/Resources/bin/language_server")).toBe(true);
+    expect(antigravityBackendAlive("/Applications/Antigravity.app/Contents/MacOS/Antigravity", "darwin")).toBe(false);
+    expect(antigravityBackendAlive("/Applications/Antigravity.app/Contents/Resources/bin/language_server", "darwin")).toBe(true);
   });
 });
 
