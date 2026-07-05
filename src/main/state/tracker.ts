@@ -216,8 +216,10 @@ export class SessionTracker {
       snap = this.probe(t);
       // 探针明确显示执行中 → 慢命令而非等审批，不亮黄，逐 tick 复查；
       // 真审批的 pending 字段有 ~15s 写入延迟（早期同样显示执行中），翻转后下个 tick 即亮黄；
-      // 通道降级/证据不足 → 维持启发式亮黄（宁可误报不漏报）
-      if (!snap?.executing) {
+      // 通道降级/证据不足 → 维持启发式亮黄（宁可误报不漏报）。
+      // 例外（2026-07-05 实测误报）：headers 弹窗标志明确 false = 无任何弹窗（自动运行的长命令），
+      // 不亮启发式黄——真审批弹窗 ~3s 内翻 true 远小于阈值；气泡 pending 落盘后仍走下方精确路径兜底
+      if (!snap?.executing && snap?.blockingPending !== false) {
         m.setWaiting("approval", now);
         return;
       }
@@ -297,8 +299,10 @@ export class SessionTracker {
       return;
     }
 
-    // 疑似卡死：探针持续报告卡死候选超阈值（白名单沿用审批豁免）
-    if (snap.stuckCandidate && !(t.pendingExec && this.isWhitelisted(t.pendingExec))) {
+    // 疑似卡死：探针持续报告卡死候选超阈值。
+    // pendingExec 活跃期间豁免（2026-07-05 实测误报）：hooks 已确认命令在执行，气泡 loading
+    // 是预期状态而非卡死证据；真挂死（after_exec 永不到达）由 judgeInactive 5min 兜底
+    if (snap.stuckCandidate && !t.pendingExec) {
       t.stuckSince ??= now;
       if (now - t.stuckSince > this.config.stuckThresholdMs) {
         m.setWaiting("stuck", now);

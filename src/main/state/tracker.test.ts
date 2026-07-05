@@ -396,6 +396,41 @@ describe("审批等待判定（3.3）", () => {
     expect(s.waitingKind).toBe("approval");
   });
 
+  // 2026-07-05 实测误报：自动运行的长命令（CI 轮询循环）hooks 静默 + 附加状态未落盘，
+  // 15s 后被启发式判成审批。headers 的弹窗标志明确 false = 没有任何弹窗，不应亮黄
+  test("自动运行长命令（blocking=false、附加状态未落盘）不亮审批黄", () => {
+    const t = new SessionTracker(deps());
+    t.handleEvent(ev("prompt"));
+    t.handleEvent(ev("before_exec", { kind: "shell", command: "for i in $(seq 1 60); do curl ci; sleep 30; done" }));
+    bubbles = [bubble({ toolName: "run_terminal_command_v2", status: "loading", additionalStatus: null })];
+    header = { blocking: false, checkpointAt: 1 };
+    now += 16000;
+    t.tick();
+    expect(t.sessions()[0].state).toBe("running");
+  });
+
+  test("弹窗标志 true 时启发式照亮（真审批弹窗 ~3s 内翻 true，远小于 15s 阈值）", () => {
+    const t = new SessionTracker(deps());
+    t.handleEvent(ev("prompt"));
+    t.handleEvent(ev("before_exec", { kind: "shell", command: "sudo something" }));
+    bubbles = [bubble({ toolName: "run_terminal_command_v2", status: "loading", additionalStatus: null })];
+    header = { blocking: true, checkpointAt: 1 };
+    now += 16000;
+    t.tick();
+    expect(t.sessions()[0].waitingKind).toBe("approval");
+  });
+
+  test("blocking=false 但气泡明确 approval_pending → 精确路径仍亮（弹窗标志误报兜底）", () => {
+    const t = new SessionTracker(deps());
+    t.handleEvent(ev("prompt"));
+    t.handleEvent(ev("before_exec", { kind: "shell", command: "sudo x" }));
+    bubbles = PENDING_APPROVAL;
+    header = { blocking: false, checkpointAt: 1 };
+    now += 16000;
+    t.tick();
+    expect(t.sessions()[0].waitingKind).toBe("approval");
+  });
+
   test("慢命令复查 tick 内探针只查一次（审批分支结果复用）", () => {
     let probeCalls = 0;
     const d = deps();
@@ -524,6 +559,32 @@ describe("疑似卡死判定（3.3b）", () => {
       t.tick();
     }
     expect(t.sessions()[0].state).toBe("running");
+  });
+
+  // 2026-07-05 实测误报：长命令执行期气泡常驻 loading + 令牌冻结，180s 后被判卡死。
+  // hooks 已确认命令在执行（pendingExec 活跃）→ loading 是预期状态，不算卡死候选
+  test("执行中的命令（pendingExec 活跃）不算卡死候选，超阈值不亮 stuck", () => {
+    const t = new SessionTracker(deps({ stuckThresholdMs: 60_000 }));
+    t.handleEvent(ev("prompt"));
+    t.handleEvent(ev("before_exec", { kind: "shell", command: "curl poll-ci" }));
+    bubbles = RUNNING_TOOL; // executing=true：审批分支不亮，走到卡死判定
+    now += 6000;
+    t.tick();
+    now += 100_000;
+    t.tick();
+    expect(t.sessions()[0].state).toBe("running");
+  });
+
+  test("真挂死兜底：执行中 hooks 静默超 inactive 阈值 → 无活动软黄灯", () => {
+    const t = new SessionTracker(deps({ stuckThresholdMs: 60_000, inactiveThresholdMs: 300_000 }));
+    t.handleEvent(ev("prompt"));
+    t.handleEvent(ev("before_exec", { kind: "shell", command: "curl hang-forever" }));
+    bubbles = RUNNING_TOOL;
+    now += 6000;
+    t.tick(); // 建令牌基线
+    now += 301_000;
+    t.tick();
+    expect(t.sessions()[0].waitingKind).toBe("inactive");
   });
 
   test("气泡翻转 completed 回 running", () => {
