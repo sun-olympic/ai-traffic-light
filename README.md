@@ -63,7 +63,7 @@ scripts/      构建辅助脚本
 
 ## 打包与 Gatekeeper
 
-`npm run dist` 产出 `release/ai-traffic-light-<版本>-mac-arm64.dmg`（文件名不含空格：GitHub 上传会把空格改成点，导致 electron-builder 查重失败重复建 Release）。安装包**未签名/未公证**，首次打开 macOS 会拦截：
+`npm run dist` 产出 `release/ai-traffic-light-<版本>-mac-arm64.dmg`（文件名不含空格：GitHub 上传会把空格改成点，导致 electron-builder 查重失败重复建 Release）。为控制体积，打包只保留 en-US/zh-CN 两种 Electron 语言包并启用最大压缩（app 由 280M 降到 233M；余下体量主要是 Electron 运行时本身，属固有开销）。安装包**未签名/未公证**，首次打开 macOS 会拦截：
 
 - 方式一：右键 App → 打开 → 再点「打开」；
 - 方式二：`xattr -dr com.apple.quarantine "/Applications/AI Traffic Light.app"`。
