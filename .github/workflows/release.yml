@@ -1,6 +1,8 @@
 # 打包发布：推 v* 标签 → 测试 + electron-builder 打 mac（dmg/zip）+ win（nsis/zip）包并发布到 GitHub Release；
 # 手动触发（workflow_dispatch）只打包上传为构建产物，不发 Release。
-# win job 串行在 mac 之后：两个 job 并发向同一 tag 创建 Release 会竞态。
+# 只 mac job 用 electron-builder 发布（创建 Release）；win job 串行在其后、只构建不发布，
+# 产物用 gh CLI 追加到同一 Release——两个 electron-builder 各自 getOrCreate 同 tag 会因
+# GitHub 读写最终一致性把同 tag 拆成两个 Release（实测 v0.2.0~0.2.2 均中招）。
 name: Release
 
 on:
@@ -35,7 +37,7 @@ jobs:
           name: mac-dist
           path: |
             release/*.dmg
-            release/*-mac.zip
+            release/*-mac-*.zip
 
   build-win:
     runs-on: windows-latest
@@ -50,14 +52,26 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
-      - name: Package (publish to Release on tag)
+      # 只构建不发布：发布统一走 gh CLI 追加到 mac job 已建好的 Release，杜绝二次创建
+      - run: npm run dist:win
+      - name: Upload Windows assets to the Release created by mac job
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run dist:win -- --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            release/*-win-x64.exe \
+            release/*-win-x64.exe.blockmap \
+            release/*-win-x64.zip \
+            --clobber
+          if [ -f release/latest.yml ]; then
+            gh release upload "${GITHUB_REF_NAME}" release/latest.yml --clobber
+          fi
       - uses: actions/upload-artifact@v4
         if: "!startsWith(github.ref, 'refs/tags/')"
         with:
           name: win-dist
           path: |
             release/*.exe
-            release/*-win.zip
+            release/*-win-*.zip
