@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { judgePending, judgeMissedQuestion, judgeStuck, snapshotFromBubbles } from "./bubble-judge";
+import { isEmptyAskResult, judgePending, judgeMissedQuestion, judgeStuck, snapshotFromBubbles } from "./bubble-judge";
 import type { BubbleRow } from "./db-reader";
 
 function row(partial: Partial<BubbleRow>): BubbleRow {
@@ -11,6 +11,7 @@ function row(partial: Partial<BubbleRow>): BubbleRow {
     additionalStatus: null,
     blockReason: null,
     reviewStatus: null,
+    result: null,
     ...partial,
   };
 }
@@ -77,25 +78,73 @@ describe("judgePending（黄灯精确判据，design Context 8/9）", () => {
   });
 });
 
-describe("judgeMissedQuestion（3.2a：提问结束挂起时检查 userDecision）", () => {
-  test("翻转后非 accepted → 错过提问", () => {
+describe("judgeMissedQuestion（3.2a：提问结束挂起时检查 userDecision 与空答案）", () => {
+  test("翻转后非 accepted → 错过提问（unanswered）", () => {
     const rows = [row({ toolName: "ask_question", status: "completed", userDecision: null, additionalStatus: "expired" })];
-    expect(judgeMissedQuestion(rows)).toBe(true);
+    expect(judgeMissedQuestion(rows)).toBe("unanswered");
   });
 
-  test("正常作答 accepted → 不标记", () => {
+  test("正常作答 accepted（带有效选项）→ 不标记", () => {
+    const rows = [row({ toolName: "ask_question", status: "completed", userDecision: "accepted", additionalStatus: "submitted", result: '{"answers":[{"questionId":"q1","selectedOptionIds":["a"]}]}' })];
+    expect(judgeMissedQuestion(rows)).toBeNull();
+  });
+
+  test("表单被意外关闭（2026-07-06 实测事故样本）：accepted+submitted 但 result 只剩 Other 占位无文本 → dismissed", () => {
+    const rows = [
+      row({
+        toolName: "ask_question",
+        status: "completed",
+        userDecision: "accepted",
+        additionalStatus: "submitted",
+        result: '{"answers":[{"questionId":"wrapup2","selectedOptionIds":["__freeform_other__"]}]}',
+      }),
+    ];
+    expect(judgeMissedQuestion(rows)).toBe("dismissed");
+  });
+
+  test("accepted 但 result 缺失（无从判断）→ 不标记", () => {
     const rows = [row({ toolName: "ask_question", status: "completed", userDecision: "accepted", additionalStatus: "submitted" })];
-    expect(judgeMissedQuestion(rows)).toBe(false);
+    expect(judgeMissedQuestion(rows)).toBeNull();
   });
 
   test("仍在挂起（pending）→ 不标记", () => {
     const rows = [row({ toolName: "ask_question", status: "completed", additionalStatus: "pending" })];
-    expect(judgeMissedQuestion(rows)).toBe(false);
+    expect(judgeMissedQuestion(rows)).toBeNull();
   });
 
   test("最新气泡不是 ask_question → 不标记", () => {
     const rows = [row({ toolName: "run_terminal_command_v2", status: "completed" })];
-    expect(judgeMissedQuestion(rows)).toBe(false);
+    expect(judgeMissedQuestion(rows)).toBeNull();
+  });
+});
+
+describe("isEmptyAskResult（有效空答案判定）", () => {
+  test("真实作答样本：自由文本 → 非空", () => {
+    expect(isEmptyAskResult('{"answers":[{"questionId":"next2","freeformText":"先不做瘦身了。帮我更新readme"}]}')).toBe(false);
+  });
+
+  test("真实作答样本：多选选项 → 非空", () => {
+    expect(isEmptyAskResult('{"answers":[{"questionId":"exec","selectedOptionIds":["pack-trim","clean-release"]}]}')).toBe(false);
+  });
+
+  test("只有 Other 占位且无文本 → 空", () => {
+    expect(isEmptyAskResult('{"answers":[{"questionId":"q","selectedOptionIds":["__freeform_other__"]}]}')).toBe(true);
+  });
+
+  test("Other 占位 + 空白文本 → 空；带文本 → 非空", () => {
+    expect(isEmptyAskResult('{"answers":[{"questionId":"q","selectedOptionIds":["__freeform_other__"],"freeformText":"  "}]}')).toBe(true);
+    expect(isEmptyAskResult('{"answers":[{"questionId":"q","selectedOptionIds":["__freeform_other__"],"freeformText":"答"}]}')).toBe(false);
+  });
+
+  test("answers 空数组 → 空；多题只要有一题有效作答 → 非空", () => {
+    expect(isEmptyAskResult('{"answers":[]}')).toBe(true);
+    expect(isEmptyAskResult('{"answers":[{"questionId":"a","selectedOptionIds":["__freeform_other__"]},{"questionId":"b","selectedOptionIds":["x"]}]}')).toBe(false);
+  });
+
+  test("result 缺失 / 非法 JSON / 无 answers 字段 → 不误报空", () => {
+    expect(isEmptyAskResult(null)).toBe(false);
+    expect(isEmptyAskResult("not-json")).toBe(false);
+    expect(isEmptyAskResult('{"foo":1}')).toBe(false);
   });
 });
 

@@ -10,6 +10,7 @@ interface RowVM {
   canIgnore: boolean;
   canAcknowledge: boolean;
   missedQuestion: boolean;
+  missedLabel: string | null;
 }
 
 interface StatePayload {
@@ -26,21 +27,21 @@ let last: StatePayload | null = null;
 /** 展开时按灯色过滤：red→failed，yellow→waiting，green→running */
 let filter: "red" | "yellow" | "green" | null = null;
 
-/** 正常完成的会话不再展示；带错过提问标记的完成会话保留入口（挂在绿灯视图） */
+/** 正常完成的会话不再展示；带错过提问标记的会话归红灯视图（需要用户注意，清除后熄灭） */
 function filterRows(rows: RowVM[], color: "red" | "yellow" | "green"): RowVM[] {
   switch (color) {
     case "red":
-      return rows.filter((r) => r.state === "failed");
+      return rows.filter((r) => r.state === "failed" || r.missedQuestion);
     case "yellow":
       return rows.filter((r) => r.state === "waiting");
     case "green":
-      return rows.filter((r) => r.state === "running" || (r.state === "idle" && r.missedQuestion));
+      return rows.filter((r) => r.state === "running");
   }
 }
 
 const LABELS: Record<string, Record<string, string>> = {
-  zh: { ignore: "忽略", ack: "知悉", missed: "有提问被自动处理，点击清除", degraded: "DB 通道降级：黄灯改用启发式", empty: "该状态暂无会话" },
-  en: { ignore: "Ignore", ack: "Ack", missed: "A question was auto-handled, click to clear", degraded: "DB degraded: heuristic yellow", empty: "No sessions in this state" },
+  zh: { ignore: "忽略", ack: "知悉", missed: "有提问被自动处理", clear: "点击清除", degraded: "DB 通道降级：黄灯改用启发式", empty: "该状态暂无会话" },
+  en: { ignore: "Ignore", ack: "Ack", missed: "A question was auto-handled", clear: "click to clear", degraded: "DB degraded: heuristic yellow", empty: "No sessions in this state" },
 };
 
 function lamp(color: "red" | "yellow" | "green", count: number, breathing: boolean): void {
@@ -61,7 +62,7 @@ function makeRow(r: RowVM, lang: string): HTMLLIElement {
   if (r.missedQuestion) {
     const ring = document.createElement("span");
     ring.className = "missed-ring";
-    ring.title = LABELS[lang].missed;
+    ring.title = `${r.missedLabel ?? LABELS[lang].missed}，${LABELS[lang].clear}`;
     ring.onclick = () => void tl.action("clearMark", r.tool, r.sessionId);
     li.appendChild(ring);
   }
@@ -80,7 +81,9 @@ function makeRow(r: RowVM, lang: string): HTMLLIElement {
   li.appendChild(name);
   const status = document.createElement("span");
   status.className = "status";
-  status.textContent = `${r.statusLabel} ${r.duration}`;
+  // 红灯视图里的错过提问行直接把具体原因当状态展示（failed 行保留"已中断"原文案）
+  const label = filter === "red" && r.missedQuestion && r.state !== "failed" ? (r.missedLabel ?? r.statusLabel) : r.statusLabel;
+  status.textContent = `${label} ${r.duration}`;
   li.appendChild(status);
   if (r.canIgnore) {
     const b = document.createElement("button");
@@ -139,7 +142,8 @@ function render(p: StatePayload): void {
     filter = null;
   }
   const c = p.aggregate.counts;
-  lamp("red", c.failed ?? 0, false);
+  // 红灯计数含错过提问会话（点圆环清除后熄灭），与红灯视图行数一致
+  lamp("red", filterRows(p.detail.rows, "red").length, false);
   lamp("yellow", c.waiting ?? 0, p.breathing);
   lamp("green", c.running ?? 0, false);
 

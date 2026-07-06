@@ -32,12 +32,14 @@ function ev(event: TrafficEvent["event"], meta: Record<string, unknown> = {}, se
 }
 
 function bubble(partial: Partial<BubbleRow>): BubbleRow {
-  return { key: "k", toolName: null, status: null, userDecision: null, additionalStatus: null, blockReason: null, reviewStatus: null, ...partial };
+  return { key: "k", toolName: null, status: null, userDecision: null, additionalStatus: null, blockReason: null, reviewStatus: null, result: null, ...partial };
 }
 
 const PENDING_ASK = [bubble({ toolName: "ask_question", status: "completed", additionalStatus: "pending" })];
-const ANSWERED_ASK = [bubble({ toolName: "ask_question", status: "completed", userDecision: "accepted", additionalStatus: "submitted" })];
+const ANSWERED_ASK = [bubble({ toolName: "ask_question", status: "completed", userDecision: "accepted", additionalStatus: "submitted", result: '{"answers":[{"questionId":"q1","selectedOptionIds":["a"]}]}' })];
 const EXPIRED_ASK = [bubble({ toolName: "ask_question", status: "completed", userDecision: null, additionalStatus: "expired" })];
+/** 2026-07-06 实测事故样本：会话重建把挂起表单自动提交为 accepted，result 只剩 Other 占位无文本 */
+const DISMISSED_ASK = [bubble({ toolName: "ask_question", status: "completed", userDecision: "accepted", additionalStatus: "submitted", result: '{"answers":[{"questionId":"q1","selectedOptionIds":["__freeform_other__"]}]}' })];
 const PENDING_APPROVAL = [bubble({ toolName: "run_terminal_command_v2", status: "loading", additionalStatus: "pending", blockReason: "Not in allowlist: sudo" })];
 const RUNNING_TOOL = [bubble({ toolName: "generate_image", status: "loading", additionalStatus: "cancelled" })];
 const DONE_TOOL = [bubble({ toolName: "run_terminal_command_v2", status: "completed", additionalStatus: "success" })];
@@ -206,6 +208,23 @@ describe("错过提问标记（3.2a）", () => {
     const s = t.sessions()[0];
     expect(s.state).toBe("running");
     expect(s.missedQuestion).toBe(true);
+    expect(s.missedReason).toBe("unanswered");
+    expect(notifications.some((n) => n.kind === "missed_question")).toBe(true);
+  });
+
+  test("表单被意外关闭（accepted 但空答案，2026-07-06 事故回归）→ 打标记 reason=dismissed", () => {
+    const t = new SessionTracker(deps());
+    t.handleEvent(ev("prompt"));
+    bubbles = PENDING_ASK;
+    now += 6000;
+    t.tick();
+    bubbles = DISMISSED_ASK;
+    now += 2000;
+    t.tick();
+    const s = t.sessions()[0];
+    expect(s.state).toBe("running");
+    expect(s.missedQuestion).toBe(true);
+    expect(s.missedReason).toBe("dismissed");
     expect(notifications.some((n) => n.kind === "missed_question")).toBe(true);
   });
 

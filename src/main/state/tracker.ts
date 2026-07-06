@@ -4,7 +4,7 @@
 // Cursor 专属的气泡判定已下沉到 adapters/cursor/bubble-judge。
 import type { AppConfig } from "../../shared/config";
 import type { TrafficEvent } from "../../shared/events";
-import type { CapabilityFlags, ProbeSnapshot, StopResolution } from "../adapters/adapter";
+import type { CapabilityFlags, MissedReason, ProbeSnapshot, StopResolution } from "../adapters/adapter";
 import { SessionMachine, type SessionState, type WaitingKind } from "./session-machine";
 import { isTrailingQuestion, lastAssistantText } from "./trailing-question";
 
@@ -16,6 +16,8 @@ export interface SessionView {
   state: SessionState;
   waitingKind: WaitingKind | null;
   missedQuestion: boolean;
+  /** 错过提问的具体原因（无标记或旧版标记无原因时为 null） */
+  missedReason: MissedReason | null;
   note: "tool_exited" | null;
   stateSince: number;
   lastEventAt: number;
@@ -254,7 +256,7 @@ export class SessionTracker {
     if (t.missedCheckUntil > 0) {
       if (snap.missedQuestion) {
         t.missedCheckUntil = 0;
-        this.markMissed(m, now);
+        this.markMissed(m, now, snap.missedReason);
       } else if (now > t.missedCheckUntil) {
         t.missedCheckUntil = 0;
       }
@@ -263,7 +265,7 @@ export class SessionTracker {
     const pending = snap.pending;
     if (m.state === "waiting" && m.waitingKind === "question" && pending.kind !== "question_pending") {
       // 提问结束：检查是否被自动处理（错过提问）
-      if (snap.missedQuestion) this.markMissed(m, now);
+      if (snap.missedQuestion) this.markMissed(m, now, snap.missedReason);
       m.clearWaiting(now);
       return;
     }
@@ -355,9 +357,17 @@ export class SessionTracker {
     return pe.command !== undefined && this.config.shellWhitelist.some((w) => pe.command!.includes(w));
   }
 
-  private markMissed(m: SessionMachine, now: number): void {
-    this.deps.marks.set(markKey.missed(m.tool, m.sessionId), String(now));
+  /** 标记值格式 "<ts>|<reason>"；旧版纯时间戳兼容（解析侧宽容） */
+  private markMissed(m: SessionMachine, now: number, reason?: MissedReason): void {
+    this.deps.marks.set(markKey.missed(m.tool, m.sessionId), `${now}|${reason ?? "unanswered"}`);
     this.deps.notify("missed_question", this.viewOf(m.tool, m.sessionId)!);
+  }
+
+  private missedReasonOf(tool: string, sid: string): MissedReason | null {
+    const v = this.deps.marks.get(markKey.missed(tool, sid));
+    if (v === undefined) return null;
+    const reason = v.split("|")[1];
+    return reason === "dismissed" ? "dismissed" : "unanswered";
   }
 
   /** 状态进入 waiting/failed 时提醒（同会话同一次进入不重复） */
@@ -433,6 +443,7 @@ export class SessionTracker {
       state: t.machine.state,
       waitingKind: t.machine.waitingKind,
       missedQuestion: this.deps.marks.has(markKey.missed(tool, sid)),
+      missedReason: this.missedReasonOf(tool, sid),
       note: t.note,
       stateSince: t.machine.stateSince,
       lastEventAt: t.machine.lastEventAt,

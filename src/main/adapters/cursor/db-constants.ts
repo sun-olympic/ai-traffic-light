@@ -1,7 +1,8 @@
 // state.vscdb 的全部 SQL 与字段名集中于此（design.md Risks：逆向接口单点收敛）
 // 禁止 LIKE 前缀扫描（实测 6.5s），只允许主键范围查询（实测 11~40ms）。
 
-/** 气泡表主键范围查询：取某会话最新 N 条气泡的 toolFormerData 关键字段 */
+/** 气泡表主键范围查询：取某会话最新 N 条气泡的 toolFormerData 关键字段。
+ * result 只对 ask_question 提取（空答案判定用）：其他工具的 result 可能是大段输出，无脑提取拖慢查询 */
 export const BUBBLE_RANGE_SQL = `
   SELECT key,
          json_extract(value, '$.toolFormerData.name')   AS toolName,
@@ -9,7 +10,9 @@ export const BUBBLE_RANGE_SQL = `
          json_extract(value, '$.toolFormerData.userDecision') AS userDecision,
          json_extract(value, '$.toolFormerData.additionalData.status') AS additionalStatus,
          json_extract(value, '$.toolFormerData.additionalData.blockReason') AS blockReason,
-         json_extract(value, '$.toolFormerData.additionalData.reviewData.status') AS reviewStatus
+         json_extract(value, '$.toolFormerData.additionalData.reviewData.status') AS reviewStatus,
+         CASE WHEN json_extract(value, '$.toolFormerData.name') = 'ask_question'
+              THEN json_extract(value, '$.toolFormerData.result') END AS result
   FROM cursorDiskKV
   WHERE key > ? AND key < ?
   ORDER BY rowid DESC
@@ -60,3 +63,5 @@ export const PENDING_ADDITIONAL_STATUS = "pending";
 export const REVIEW_REQUESTED = "Requested";
 export const DECISION_ACCEPTED = "accepted";
 export const ASK_QUESTION_TOOL = "ask_question";
+/** 提问表单"Other/自由输入"选项的占位 id（2026-07-06 实测）：result 里只有它且无文本 = 有效空答案 */
+export const FREEFORM_OTHER_ID = "__freeform_other__";

@@ -36,6 +36,13 @@ export type ProbeResult =
   | { kind: "none" }
   | { kind: "db_unavailable" };
 
+/**
+ * 错过提问的具体原因：
+ * dismissed = 表单被界面重建等意外关闭，作答（含草稿）未提交（2026-07-06 实测事故）；
+ * unanswered = 提问结束但用户从未作答（超时/自动处理）。
+ */
+export type MissedReason = "dismissed" | "unanswered";
+
 /** 工具无关的探针快照（v2 探针通路）：判定器下沉 adapter 内部，tracker 只消费此结构 */
 export interface ProbeSnapshot {
   /** 挂起等待判定（提问/审批/无） */
@@ -46,6 +53,8 @@ export interface ProbeSnapshot {
   stuckCandidate: boolean;
   /** 提问已结束且未被采纳（错过提问） */
   missedQuestion: boolean;
+  /** 错过提问的具体原因（missedQuestion=true 时携带） */
+  missedReason?: MissedReason;
   /** 工具自身的"阻塞对话框挂起"标志（Cursor composerHeaders）；undefined = 通道无此信号 */
   blockingPending?: boolean;
   /**

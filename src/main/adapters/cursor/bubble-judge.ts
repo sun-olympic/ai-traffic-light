@@ -3,9 +3,9 @@
 // 判据来自 2026-07-03 实验（design.md Context 8/9）：
 // 挂起等待 = additionalData.status="pending"（bubble status 在挂起 30s 后会翻 completed，不可靠）；
 // 挂起初期存在 additionalData 为空的过渡窗口，此时 ask_question 的 status=loading 仍可判提问。
-import { ASK_QUESTION_TOOL, DECISION_ACCEPTED, PENDING_ADDITIONAL_STATUS, REVIEW_REQUESTED } from "./db-constants";
+import { ASK_QUESTION_TOOL, DECISION_ACCEPTED, FREEFORM_OTHER_ID, PENDING_ADDITIONAL_STATUS, REVIEW_REQUESTED } from "./db-constants";
 import type { BubbleRow, ComposerHeader } from "./db-reader";
-import type { ProbeResult, ProbeSnapshot } from "../adapter";
+import type { MissedReason, ProbeResult, ProbeSnapshot } from "../adapter";
 
 /** rowid 倒序结果中的最新工具气泡（跳过普通消息气泡） */
 function latestToolBubble(rows: BubbleRow[]): BubbleRow | null {
@@ -34,13 +34,42 @@ export function judgePending(rows: BubbleRow[]): ProbeResult {
   return { kind: "none" };
 }
 
-/** 错过提问：ask_question 结束挂起（非 pending/loading）且 userDecision 非 accepted */
-export function judgeMissedQuestion(rows: BubbleRow[]): boolean {
+/**
+ * 有效空答案（2026-07-06 实测事故）：会话视图重建（上下文压缩/界面刷新）会把挂起表单
+ * 自动提交为 accepted+submitted，但 result 里每个答案既无有效选项（只剩 __freeform_other__
+ * 占位）也无自由文本——用户正在输入的草稿被丢弃。result 缺失或解析失败不误报。
+ */
+export function isEmptyAskResult(result: string | null): boolean {
+  if (!result) return false;
+  let answers: Array<{ selectedOptionIds?: unknown; freeformText?: unknown }>;
+  try {
+    const parsed = JSON.parse(result) as { answers?: unknown };
+    if (!Array.isArray(parsed.answers)) return false;
+    answers = parsed.answers as typeof answers;
+  } catch {
+    return false;
+  }
+  if (answers.length === 0) return true;
+  return answers.every((a) => {
+    const opts = Array.isArray(a.selectedOptionIds) ? a.selectedOptionIds.filter((id) => id !== FREEFORM_OTHER_ID) : [];
+    const text = typeof a.freeformText === "string" ? a.freeformText.trim() : "";
+    return opts.length === 0 && text === "";
+  });
+}
+
+/**
+ * 错过提问：ask_question 结束挂起（非 pending/loading）后，
+ * userDecision 非 accepted = 从未作答（unanswered）；
+ * accepted 但答案为有效空 = 表单被意外关闭、作答未提交（dismissed）。
+ */
+export function judgeMissedQuestion(rows: BubbleRow[]): MissedReason | null {
   const b = latestToolBubble(rows);
-  if (!b || b.toolName !== ASK_QUESTION_TOOL) return false;
+  if (!b || b.toolName !== ASK_QUESTION_TOOL) return null;
   const stillPending = b.additionalStatus === PENDING_ADDITIONAL_STATUS || (b.status === "loading" && b.additionalStatus === null);
-  if (stillPending) return false;
-  return b.userDecision !== DECISION_ACCEPTED;
+  if (stillPending) return null;
+  if (b.userDecision !== DECISION_ACCEPTED) return "unanswered";
+  if (isEmptyAskResult(b.result)) return "dismissed";
+  return null;
 }
 
 /** 疑似卡死候选：最新工具气泡 loading 且不属于挂起等待（时长阈值由调用方计时） */
@@ -65,11 +94,13 @@ export function judgeExecuting(rows: BubbleRow[]): boolean {
 export function snapshotFromBubbles(rows: BubbleRow[] | null, header?: ComposerHeader | null): ProbeSnapshot | null {
   if (rows === null) return null;
   const top = rows[0];
+  const missedReason = judgeMissedQuestion(rows);
   return {
     pending: judgePending(rows),
     executing: judgeExecuting(rows),
     stuckCandidate: judgeStuck(rows),
-    missedQuestion: judgeMissedQuestion(rows),
+    missedQuestion: missedReason !== null,
+    ...(missedReason !== null ? { missedReason } : {}),
     blockingPending: header ? header.blocking : undefined,
     // 令牌覆盖：最新气泡（新增/字段翻转）+ headers（弹窗标志翻转/检查点前进），任一变化即视为活性
     changeToken: `${top?.key ?? ""}|${top?.status ?? ""}|${top?.additionalStatus ?? ""}|${header?.blocking ?? ""}|${header?.checkpointAt ?? ""}`,

@@ -13,6 +13,8 @@ export interface DetailRow {
   canIgnore: boolean;
   canAcknowledge: boolean;
   missedQuestion: boolean;
+  /** 错过提问的本地化原因文案（红灯明细行与圆环提示用）；无标记为 null */
+  missedLabel: string | null;
 }
 
 export interface DetailModel {
@@ -91,6 +93,7 @@ function toRow(v: SessionView, lang: Lang, now: number, name?: string): DetailRo
     canIgnore: v.state === "waiting" && soft,
     canAcknowledge: v.state === "failed",
     missedQuestion: v.missedQuestion,
+    missedLabel: v.missedQuestion ? t(lang, v.missedReason === "dismissed" ? "missed_dismissed" : "missed_unanswered") : null,
   };
 }
 

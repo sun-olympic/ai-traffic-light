@@ -54,6 +54,18 @@ describe("CursorDbReader", () => {
     reader.close();
   });
 
+  test("result 字段只对 ask_question 提取（其他工具恒 null，避免大输出进 JS）", () => {
+    seed([
+      bubble("c1", "b1", { name: "run_terminal_command_v2", status: "completed", result: '{"output":"大段命令输出"}' }),
+      bubble("c1", "b2", { name: "ask_question", status: "completed", userDecision: "accepted", result: '{"answers":[{"questionId":"q","selectedOptionIds":["__freeform_other__"]}]}' }),
+    ]);
+    const reader = new CursorDbReader(dbPath);
+    const rows = reader.latestBubbles("c1", 2);
+    expect(rows[0].result).toContain("__freeform_other__");
+    expect(rows[1].result).toBeNull();
+    reader.close();
+  });
+
   test("无 toolFormerData 的普通气泡 toolName 为 null", () => {
     seed([bubble("c1", "b1", null)]);
     const reader = new CursorDbReader(dbPath);

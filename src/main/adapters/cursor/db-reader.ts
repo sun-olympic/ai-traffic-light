@@ -13,6 +13,8 @@ export interface BubbleRow {
   additionalStatus: string | null;
   blockReason: string | null;
   reviewStatus: string | null;
+  /** ask_question 的作答结果 JSON（其余工具恒 null，SQL 侧 CASE 过滤） */
+  result: string | null;
 }
 
 export interface SessionMeta {

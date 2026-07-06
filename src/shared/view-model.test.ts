@@ -9,6 +9,7 @@ function s(partial: Partial<SessionView>): SessionView {
     state: "running",
     waitingKind: null,
     missedQuestion: false,
+    missedReason: null,
     note: null,
     stateSince: 1000,
     lastEventAt: 1000,
@@ -40,9 +41,16 @@ describe("buildDetailModel", () => {
     expect(rows[0].canAcknowledge).toBe(true);
   });
 
-  test("错过提问标记透出", () => {
-    const rows = buildDetailModel([s({ missedQuestion: true })], "zh", now).rows;
+  test("错过提问标记透出，原因映射本地化文案", () => {
+    const rows = buildDetailModel([s({ missedQuestion: true, missedReason: "dismissed" })], "zh", now).rows;
     expect(rows[0].missedQuestion).toBe(true);
+    expect(rows[0].missedLabel).toBe("提问表单被意外关闭，作答未提交");
+    const unanswered = buildDetailModel([s({ missedQuestion: true, missedReason: "unanswered" })], "en", now).rows;
+    expect(unanswered[0].missedLabel).toBe("Question auto-handled without answer");
+    // 旧版标记无原因：回退 unanswered 文案；无标记则无文案
+    const legacy = buildDetailModel([s({ missedQuestion: true, missedReason: null })], "zh", now).rows;
+    expect(legacy[0].missedLabel).toBe("提问未作答被自动处理");
+    expect(buildDetailModel([s({})], "zh", now).rows[0].missedLabel).toBeNull();
   });
 
   test("排序：waiting > failed > running > idle", () => {

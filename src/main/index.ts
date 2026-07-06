@@ -129,11 +129,12 @@ function onNotify(kind: NotifyKind, session: SessionView): void {
         : metaName(session.tool, session.sessionId)) ?? session.sessionId.slice(0, 8);
   if (config.systemNotification && Notification.isSupported()) {
     const title = kind === "failed" ? t(lang, "notif_failed_title") : kind === "missed_question" ? t(lang, "notif_missed_title") : t(lang, "notif_waiting_title");
-    const body = kind === "missed_question" ? t(lang, "notif_missed_body", { name }) : name;
+    const body = kind === "missed_question" ? t(lang, session.missedReason === "dismissed" ? "notif_dismissed_body" : "notif_missed_body", { name }) : name;
     new Notification({ title, body }).show();
   }
   if (config.soundAlert) {
-    widget?.webContents.send("sound:play", soundFile(kind === "failed" ? "red" : "yellow"));
+    // 错过提问与中断同级：红灯提醒（提问已丢失需要用户补救，不是普通等待）
+    widget?.webContents.send("sound:play", soundFile(kind === "failed" || kind === "missed_question" ? "red" : "yellow"));
   }
 }
 
