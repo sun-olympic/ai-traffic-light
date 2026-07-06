@@ -29,6 +29,7 @@
     "files": [
       "dist/**/*",
       "assets/**/*",
+      "!assets/icons/icon-1024.png",
       "hook-scripts/**/*",
       "package.json"
     ],
