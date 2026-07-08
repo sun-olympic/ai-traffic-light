@@ -24,7 +24,7 @@
 
 ## 使用前准备（各工具配置）
 
-四个工具的接入成本不同：**Cursor / Codex 需要安装 hooks**（Codex 还要一次人工信任），**Qoder / Antigravity 零配置**免安装。各通道状态都在 设置页 → 对应采集区块 实时显示。
+六个工具的接入成本不同：**Cursor / Codex 需要安装 hooks**（Codex 还要一次人工信任），**Qoder / Antigravity / CodeBuddy / WorkBuddy 零配置**免安装。各通道状态都在 设置页 → 对应采集区块 实时显示。
 
 **通用前提**：
 
@@ -65,6 +65,14 @@ Codex 已知限制：
 
 零配置、仅 macOS：App 自动发现并只读 `~/.gemini/antigravity/conversations/*.db`。非默认安装位置可用环境变量 `TL_ANTIGRAVITY_HOME` 覆盖。未安装时设置页显示「未检测到」。
 
+### CodeBuddy
+
+零配置：App 自动只读会话状态库（macOS `~/Library/Application Support/CodeBuddy CN/codebuddy-sessions.vscdb`）检测绿灯（`Working` → 运行中、`Completed` → 结束），并读取 `~/Library/Application Support/CodeBuddyExtension/Data/` 下的对话历史文件检测黄灯（AI 回复末尾是否在向用户提问）。未安装 CodeBuddy 时设置页显示「未检测到」。
+
+### WorkBuddy
+
+零配置：App 自动只读会话数据库（`~/.workbuddy/workbuddy.db`）和对话记录文件（`~/.workbuddy/projects/<workspace>/<session>.jsonl`）检测绿灯、黄灯。非默认安装位置可用环境变量 `TL_WORKBUDDY_HOME` 覆盖。未安装时设置页显示「未检测到」。
+
 ### 卸载
 
 设置页一键移除各工具 hooks 条目（只删本工具的，不动用户已有钩子）+ 删除 `~/.ai-traffic-light/`。
@@ -100,4 +108,4 @@ scripts/      构建辅助脚本
 
 ## Windows 支持（实验性）
 
-CI 会同时产出 Windows 安装包（`*.exe` nsis / `*-win.zip`）。Cursor、Codex 通道完整支持（DB 路径、hooks、进程检测已适配 `tasklist`）；Qoder 路径按 `%APPDATA%/Qoder` 惯例推测、未经真机验证；Antigravity 暂不支持（健康页显示未检测到）。安装包同样未签名，SmartScreen 首次运行需点「仍要运行」。
+CI 会同时产出 Windows 安装包（`*.exe` nsis / `*-win.zip`）。Cursor、Codex 通道完整支持（DB 路径、hooks、进程检测已适配 `tasklist`）；Qoder 路径按 `%APPDATA%/Qoder` 惯例推测、未经真机验证；CodeBuddy 路径按 `%APPDATA%/CodeBuddy CN` 惯例推测；Antigravity / WorkBuddy 暂不支持 Windows（健康页显示未检测到）。安装包同样未签名，SmartScreen 首次运行需点「仍要运行」。
