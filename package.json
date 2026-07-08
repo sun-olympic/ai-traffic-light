@@ -1,6 +1,6 @@
 {
   "name": "ai-traffic-light",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "AI 会话红绿灯：常驻桌面悬浮窗，实时显示 Cursor 等 AI 工具会话的运行/等待/异常状态",
   "private": true,
   "main": "dist/main/index.js",
