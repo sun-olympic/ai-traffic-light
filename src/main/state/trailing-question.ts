@@ -2,12 +2,12 @@
 // ponytail: 纯词表+问号启发式，不调 LLM；误判由 UI 忽略按钮兜底，词表可配置迭代。
 
 /** 取文本末尾数句，判断是否在向用户提问。
- *  检查最后 3 句（问句后常跟一句短补充说明，如"发路径就行。"），有一句含问号即判定。 */
+ *  检查最后 2 句（问句后常跟一句短补充说明，如"发路径就行。"），有一句含问号即判定。 */
 export function isTrailingQuestion(text: string, questionWords: string[]): boolean {
   const trimmed = text.trim();
   if (!trimmed) return false;
   const sentences = trimmed.split(/(?<=[。！？!?.])\s*/).filter((s) => s.trim());
-  const tailCount = Math.min(sentences.length, 3);
+  const tailCount = Math.min(sentences.length, 2);
   for (let i = sentences.length - tailCount; i < sentences.length; i++) {
     if (/[？?]\s*$/.test(sentences[i])) return true;
   }
