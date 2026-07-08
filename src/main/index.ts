@@ -304,8 +304,20 @@ function metaName(tool: string, sessionId: string): string | null {
     return info.displayName ? sanitizeSessionName(info.displayName) || qoderSafeName(info.taskId, info.workspacePath) : qoderSafeName(info.taskId, info.workspacePath);
   }
   if (tool === "workbuddy") {
+    const k = `workbuddy:${sessionId}`;
     const info = workbuddyPoller.sessionInfo(sessionId);
-    return info?.title ? sanitizeSessionName(info.title) || workbuddySafeName(sessionId) : workbuddySafeName(sessionId);
+    // ponytail: customTitle 是用户手动改名，不受缓存影响
+    if (info?.customTitle) {
+      const ct = sanitizeSessionName(info.customTitle);
+      if (ct) { nameCache.set(k, { name: ct, at: Date.now() }); return ct; }
+    }
+    const hit = nameCache.get(k);
+    if (hit && Date.now() - hit.at < 60_000) return hit.name;
+    const name = (info?.title ? sanitizeSessionName(info.title) || null : null)
+      ?? workbuddySafeName(sessionId);
+    // ponytail: title 由 AI 生成，可能首次 poll 时为空；空时不缓存，下次重试
+    if (info?.title) nameCache.set(k, { name, at: Date.now() });
+    return name;
   }
   if (tool === "codebuddy") {
     const info = codebuddyPoller.sessionInfo(sessionId);

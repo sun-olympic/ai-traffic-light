@@ -16,6 +16,7 @@ export interface WorkbuddySession {
   status: WorkbuddyStatus;
   updatedAt: number;
   title: string | null;
+  customTitle: string | null;
   cwd: string | null;
 }
 
@@ -33,6 +34,8 @@ export function defaultWorkbuddyHome(): string | null {
 
 const STATUS_MAP: Record<string, WorkbuddyStatus> = {
   pending: "waiting",
+  planning: "running",
+  working: "running",
   running: "running",
   in_progress: "running",
   active: "running",
@@ -174,15 +177,15 @@ export class WorkbuddySnapshotReader {
       const updatedAt = typeof r.last_activity_at === "number" ? r.last_activity_at
         : typeof r.updated_at === "number" ? r.updated_at
         : 0;
-      const title = typeof r.custom_title === "string" && r.custom_title.trim() ? r.custom_title
-        : typeof r.title === "string" && r.title.trim() ? r.title
-        : null;
+      const customTitle = typeof r.custom_title === "string" && r.custom_title.trim() ? r.custom_title : null;
+      const title = typeof r.title === "string" && r.title.trim() ? r.title : null;
       const cwd = typeof r.cwd === "string" && r.cwd.trim() ? r.cwd : null;
       out.push({
         sessionId: id,
         status: normalizeWorkbuddyStatus(rawStatus),
         updatedAt,
         title,
+        customTitle,
         cwd,
       });
     }
