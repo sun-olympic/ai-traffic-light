@@ -1,8 +1,7 @@
-# 打包发布：推 v* 标签 → 测试 + electron-builder 打 mac（dmg/zip）+ win（nsis/zip）包并发布到 GitHub Release；
+# 打包发布：推 v* 标签 → 测试 + electron-builder 并行打 mac（dmg）+ win（nsis）包并发布到 GitHub Release；
 # 手动触发（workflow_dispatch）只打包上传为构建产物，不发 Release。
-# 只 mac job 用 electron-builder 发布（创建 Release）；win job 串行在其后、只构建不发布，
-# 产物用 gh CLI 追加到同一 Release——两个 electron-builder 各自 getOrCreate 同 tag 会因
-# GitHub 读写最终一致性把同 tag 拆成两个 Release（实测 v0.2.0~0.2.2 均中招）。
+# Release 由 prepare-release job 预先创建；mac/win job 都只构建不让 electron-builder 发布，
+# 再用 gh CLI 上传产物，避免两个 electron-builder 各自 getOrCreate 同 tag 时拆出重复 Release。
 name: Release
 
 on:
@@ -13,70 +12,208 @@ on:
 permissions:
   contents: write
 
+env:
+  NODE_VERSION: "26"
+
 jobs:
-  build-mac:
+  test:
     runs-on: macos-latest
     env:
+      ELECTRON_CACHE: ${{ github.workspace }}/.electron-cache
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.eb-cache
       # 无签名证书：跳过 identity 自动发现，产出未签名包
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
-      - run: npm ci
-      - run: npm test
-      - name: Package (publish to Release on tag)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm run dist -- --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
-      - uses: actions/upload-artifact@v4
-        if: "!startsWith(github.ref, 'refs/tags/')"
+      - name: Read Electron cache versions
+        id: cache-versions
+        shell: bash
+        run: |
+          echo "electron=$(node -p 'require("./package-lock.json").packages["node_modules/electron"].version')" >> "$GITHUB_OUTPUT"
+          echo "builder=$(node -p 'require("./package-lock.json").packages["node_modules/electron-builder"].version')" >> "$GITHUB_OUTPUT"
+      - name: Prepare Electron cache directories
+        shell: bash
+        run: mkdir -p .electron-cache .eb-cache
+      - uses: actions/cache/restore@v4
+        id: electron-tools-cache
         with:
-          name: mac-dist
           path: |
-            release/*.dmg
-            release/*-mac-*.zip
-
-  build-win:
-    runs-on: windows-latest
-    needs: build-mac
-    env:
-      CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.eb-cache
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26
-          cache: npm
-      - uses: actions/cache@v4
-        with:
-          path: .eb-cache
-          key: eb-win-${{ hashFiles('package-lock.json') }}
-          restore-keys: eb-win-
+            .electron-cache
+            .eb-cache
+          key: electron-tools-${{ runner.os }}-node-${{ env.NODE_VERSION }}-electron-${{ steps.cache-versions.outputs.electron }}-builder-${{ steps.cache-versions.outputs.builder }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-tools-${{ runner.os }}-node-${{ env.NODE_VERSION }}-electron-${{ steps.cache-versions.outputs.electron }}-builder-${{ steps.cache-versions.outputs.builder }}-
+            electron-tools-${{ runner.os }}-node-${{ env.NODE_VERSION }}-electron-${{ steps.cache-versions.outputs.electron }}-
+            electron-tools-${{ runner.os }}-node-${{ env.NODE_VERSION }}-
       - run: npm ci
-      # 测试已在 mac job 通过，此处跳过；--publish never 避免 electron-builder 自行发布
-      - run: npm run dist:win -- --publish never
-      - name: Upload Windows assets to the Release created by mac job
+        id: npm-ci
+      - run: npm test
+      - uses: actions/cache/save@v4
+        if: always() && steps.npm-ci.outcome == 'success' && steps.electron-tools-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            .electron-cache
+            .eb-cache
+          key: ${{ steps.electron-tools-cache.outputs.cache-primary-key }}
+
+  prepare-release:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Prepare GitHub Release on tag
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${GITHUB_REF_NAME}" \
-            release/*-win-x64.exe \
-            release/*-win-x64.exe.blockmap \
-            release/*-win-x64.zip \
-            --clobber
-          if [ -f release/latest.yml ]; then
-            gh release upload "${GITHUB_REF_NAME}" release/latest.yml --clobber
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --target "${GITHUB_SHA}" \
+              --title "${GITHUB_REF_NAME}" \
+              --notes "Release ${GITHUB_REF_NAME}"
           fi
+
+          while IFS=$'\t' read -r asset_id asset_name; do
+            [ -n "${asset_id}" ] || continue
+            echo "Deleting stale zip asset: ${asset_name}"
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}"
+          done < <(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq '.assets[] | select(.name | endswith(".zip")) | "\(.id)\t\(.name)"')
+
+  build-mac:
+    runs-on: macos-latest
+    needs: prepare-release
+    env:
+      ELECTRON_CACHE: ${{ github.workspace }}/.electron-cache
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.eb-cache
+      # 无签名证书：跳过 identity 自动发现，产出未签名包
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Read Electron cache versions
+        id: cache-versions
+        shell: bash
+        run: |
+          echo "electron=$(node -p 'require("./package-lock.json").packages["node_modules/electron"].version')" >> "$GITHUB_OUTPUT"
+          echo "builder=$(node -p 'require("./package-lock.json").packages["node_modules/electron-builder"].version')" >> "$GITHUB_OUTPUT"
+      - name: Prepare Electron cache directories
+        shell: bash
+        run: mkdir -p .electron-cache .eb-cache
+      - uses: actions/cache/restore@v4
+        id: electron-tools-cache
+        with:
+          path: |
+            .electron-cache
+            .eb-cache
+          key: electron-tools-${{ runner.os }}-node-${{ env.NODE_VERSION }}-electron-${{ steps.cache-versions.outputs.electron }}-builder-${{ steps.cache-versions.outputs.builder }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-tools-${{ runner.os }}-node-${{ env.NODE_VERSION }}-electron-${{ steps.cache-versions.outputs.electron }}-builder-${{ steps.cache-versions.outputs.builder }}-
+            electron-tools-${{ runner.os }}-node-${{ env.NODE_VERSION }}-electron-${{ steps.cache-versions.outputs.electron }}-
+            electron-tools-${{ runner.os }}-node-${{ env.NODE_VERSION }}-
+      - run: npm ci
+        id: npm-ci
+      - name: Package mac
+        run: npm run dist -- --publish never
+      - uses: actions/cache/save@v4
+        if: always() && steps.npm-ci.outcome == 'success' && steps.electron-tools-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            .electron-cache
+            .eb-cache
+          key: ${{ steps.electron-tools-cache.outputs.cache-primary-key }}
+      - name: Upload mac assets to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          files=(release/*.dmg)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No mac release assets found."
+            exit 1
+          fi
+          gh release upload "${GITHUB_REF_NAME}" "${files[@]}" --clobber
+      - uses: actions/upload-artifact@v4
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        with:
+          name: mac-dist
+          if-no-files-found: error
+          path: |
+            release/*.dmg
+
+  build-win:
+    runs-on: windows-latest
+    needs: prepare-release
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      ELECTRON_CACHE: ${{ github.workspace }}/.electron-cache
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.eb-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Read Electron cache versions
+        id: cache-versions
+        shell: bash
+        run: |
+          echo "electron=$(node -p 'require("./package-lock.json").packages["node_modules/electron"].version')" >> "$GITHUB_OUTPUT"
+          echo "builder=$(node -p 'require("./package-lock.json").packages["node_modules/electron-builder"].version')" >> "$GITHUB_OUTPUT"
+      - name: Prepare Electron cache directories
+        shell: bash
+        run: mkdir -p .electron-cache .eb-cache
+      - uses: actions/cache/restore@v4
+        id: electron-tools-cache
+        with:
+          path: |
+            .electron-cache
+            .eb-cache
+          key: electron-tools-${{ runner.os }}-node-${{ env.NODE_VERSION }}-electron-${{ steps.cache-versions.outputs.electron }}-builder-${{ steps.cache-versions.outputs.builder }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-tools-${{ runner.os }}-node-${{ env.NODE_VERSION }}-electron-${{ steps.cache-versions.outputs.electron }}-builder-${{ steps.cache-versions.outputs.builder }}-
+            electron-tools-${{ runner.os }}-node-${{ env.NODE_VERSION }}-electron-${{ steps.cache-versions.outputs.electron }}-
+            electron-tools-${{ runner.os }}-node-${{ env.NODE_VERSION }}-
+      - run: npm ci
+        id: npm-ci
+      - run: npm run dist:win -- --publish never
+      - uses: actions/cache/save@v4
+        if: always() && steps.npm-ci.outcome == 'success' && steps.electron-tools-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            .electron-cache
+            .eb-cache
+          key: ${{ steps.electron-tools-cache.outputs.cache-primary-key }}
+      - name: Upload Windows assets to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          shopt -s nullglob
+          files=(release/*.exe release/*.exe.blockmap)
+          if [ -f release/latest.yml ]; then
+            files+=(release/latest.yml)
+          fi
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No Windows release assets found."
+            exit 1
+          fi
+          gh release upload "${GITHUB_REF_NAME}" "${files[@]}" --clobber
       - uses: actions/upload-artifact@v4
         if: "!startsWith(github.ref, 'refs/tags/')"
         with:
           name: win-dist
+          if-no-files-found: error
           path: |
             release/*.exe
-            release/*-win-*.zip
+            release/*.exe.blockmap
+            release/latest.yml
