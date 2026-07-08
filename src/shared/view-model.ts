@@ -32,7 +32,7 @@ export function formatDuration(ms: number): string {
   return `${h}h${m % 60 ? `${m % 60}m` : ""}`;
 }
 
-const TOOL_DISPLAY: Record<string, string> = { cursor: "Cursor", codex: "Codex", qoder: "Qoder", antigravity: "Antigravity" };
+const TOOL_DISPLAY: Record<string, string> = { cursor: "Cursor", codex: "Codex", qoder: "Qoder", antigravity: "Antigravity", codebuddy: "CodeBuddy", workbuddy: "WorkBuddy" };
 
 export function toolDisplayName(tool: string): string {
   return TOOL_DISPLAY[tool] ?? tool;

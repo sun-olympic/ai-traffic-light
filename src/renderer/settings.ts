@@ -58,6 +58,18 @@ const I18N: Record<string, Record<string, string>> = {
     ag_alive: "Antigravity 运行中",
     ag_dead: "Antigravity 未运行",
     ag_backend_down: "后端 language_server 未运行（应用存活）",
+    sec_codebuddy: "CodeBuddy 采集",
+    cb_not_detected: "未检测到（未安装 CodeBuddy 时无需处理）",
+    cb_ok: "会话读取正常",
+    cb_degraded: "会话读取降级，自动重试中",
+    cb_alive: "CodeBuddy 运行中",
+    cb_dead: "CodeBuddy 未运行",
+    sec_workbuddy: "WorkBuddy 采集",
+    wb_not_detected: "未检测到（未安装 WorkBuddy 时无需处理）",
+    wb_ok: "会话读取正常",
+    wb_degraded: "会话读取降级，自动重试中",
+    wb_alive: "WorkBuddy 运行中",
+    wb_dead: "WorkBuddy 未运行",
   },
   en: {
     title: "AI Traffic Light · Settings",
@@ -117,6 +129,18 @@ const I18N: Record<string, Record<string, string>> = {
     ag_alive: "Antigravity running",
     ag_dead: "Antigravity not running",
     ag_backend_down: "Backend language_server not running (app alive)",
+    sec_codebuddy: "CodeBuddy collector",
+    cb_not_detected: "Not detected (nothing to do if CodeBuddy is not installed)",
+    cb_ok: "Session store readable",
+    cb_degraded: "Session store degraded, retrying",
+    cb_alive: "CodeBuddy running",
+    cb_dead: "CodeBuddy not running",
+    sec_workbuddy: "WorkBuddy collector",
+    wb_not_detected: "Not detected (nothing to do if WorkBuddy is not installed)",
+    wb_ok: "Session store readable",
+    wb_degraded: "Session store degraded, retrying",
+    wb_alive: "WorkBuddy running",
+    wb_dead: "WorkBuddy not running",
   },
 };
 
@@ -181,8 +205,10 @@ async function refreshHealth(): Promise<void> {
     `<div class="${stale ? "bad" : ""}">${L.h_last_event}: ${lastEv}</div>`,
   ].join("");
   renderCodex(h.codex);
+  renderCodebuddy(h.codebuddy);
   renderQoder(h.qoder);
   renderAntigravity(h.antigravity);
+  renderWorkbuddy(h.workbuddy);
 }
 
 /** Qoder 三态健康（add-qoder-support D9）：not_detected 中性无告警，degraded 才标红 */
@@ -230,6 +256,22 @@ function renderCodex(c: CodexHealth): void {
   guide.textContent = c.state === "installed_inactive" || (codexJustInstalled && c.state !== "ok")
     ? (codexJustInstalled ? `${L.cx_installed_hint}\n` : "") + L.cx_guide
     : "";
+}
+
+function renderCodebuddy(c: CodebuddyHealthView): void {
+  const L = I18N[lang];
+  const stateText = { not_detected: L.cb_not_detected, ok: L.cb_ok, degraded: L.cb_degraded }[c.state];
+  const rows = [`<div class="${c.state === "degraded" ? "bad" : c.state === "ok" ? "ok" : ""}">${stateText}</div>`];
+  if (c.state !== "not_detected") rows.push(`<div>${c.alive ? L.cb_alive : L.cb_dead}</div>`);
+  document.getElementById("codebuddy-health")!.innerHTML = rows.join("");
+}
+
+function renderWorkbuddy(w: WorkbuddyHealthView): void {
+  const L = I18N[lang];
+  const stateText = { not_detected: L.wb_not_detected, ok: L.wb_ok, degraded: L.wb_degraded }[w.state];
+  const rows = [`<div class="${w.state === "degraded" ? "bad" : w.state === "ok" ? "ok" : ""}">${stateText}</div>`];
+  if (w.state !== "not_detected") rows.push(`<div>${w.alive ? L.wb_alive : L.wb_dead}</div>`);
+  document.getElementById("workbuddy-health")!.innerHTML = rows.join("");
 }
 
 async function init(): Promise<void> {

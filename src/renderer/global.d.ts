@@ -20,6 +20,16 @@ interface AntigravityHealthView {
   backendAlive: boolean;
 }
 
+interface CodebuddyHealthView {
+  state: "not_detected" | "ok" | "degraded";
+  alive: boolean;
+}
+
+interface WorkbuddyHealthView {
+  state: "not_detected" | "ok" | "degraded";
+  alive: boolean;
+}
+
 interface TlGlobalApi {
   onState(cb: (p: unknown) => void): void;
   onPlaySound(cb: (file: string) => void): void;
@@ -37,8 +47,10 @@ interface TlGlobalApi {
     lastEventAt: number;
     cursorAlive: boolean;
     codex: CodexHealth;
+    codebuddy: CodebuddyHealthView;
     qoder: QoderHealthView;
     antigravity: AntigravityHealthView;
+    workbuddy: WorkbuddyHealthView;
   }>;
   sound(op: string, color: string, filePath?: string): Promise<{ ok: boolean }>;
 }

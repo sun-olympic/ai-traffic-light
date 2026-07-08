@@ -71,6 +71,22 @@ export function codexProcessAlive(table: string, platform: string = process.plat
   });
 }
 
+// CodeBuddy CN（VS Code 派生）：主进程 comm 为 <App>/Contents/MacOS/Electron，用包路径前缀匹配
+export const CODEBUDDY_PROCESS_PATTERNS = ["CodeBuddy CN.app/Contents/MacOS/"] as const;
+
+export function codebuddyProcessAlive(table: string, platform: string = process.platform): boolean {
+  if (platform === "win32") return imageLineMatches(table, ["CodeBuddy CN.exe"]);
+  return anyProcessMatches(table, CODEBUDDY_PROCESS_PATTERNS);
+}
+
+// ponytail: WorkBuddy 进程名待真机确认，推测为 "Tencent WorkBuddy.app" 或 "WorkBuddy.app"
+export const WORKBUDDY_PROCESS_PATTERNS = ["WorkBuddy.app/Contents/MacOS/"] as const;
+
+export function workbuddyProcessAlive(table: string, platform: string = process.platform): boolean {
+  if (platform === "win32") return imageLineMatches(table, ["WorkBuddy.exe", "Tencent WorkBuddy.exe"]);
+  return anyProcessMatches(table, WORKBUDDY_PROCESS_PATTERNS);
+}
+
 /** tasklist /fo csv /nh 输出 → 镜像名每行一个（畸形行/提示行安全跳过） */
 export function parseTasklist(csv: string): string {
   const names: string[] = [];

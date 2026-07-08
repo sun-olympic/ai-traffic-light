@@ -1,6 +1,6 @@
 # AI Traffic Light（AI 会话红绿灯）
 
-常驻桌面的红绿灯造型悬浮窗，实时显示本机 AI 工具（当前支持 Cursor、OpenAI Codex、Qoder、Antigravity）agent 会话状态：
+常驻桌面的红绿灯造型悬浮窗，实时显示本机 AI 工具（当前支持 Cursor、OpenAI Codex、Qoder、Antigravity、CodeBuddy、WorkBuddy）agent 会话状态：
 
 - 🟢 运行中
 - 🟡 等待确认（agent 提问 / 命令与 MCP 审批 / 结尾提问 / 疑似卡死 / 长时间无活动）

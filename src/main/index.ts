@@ -20,7 +20,11 @@ import { antigravitySafeName, AntigravitySnapshotSource } from "./adapters/antig
 import { AntigravityPoller } from "./adapters/antigravity/poller";
 import { AntigravityTitleReader } from "./adapters/antigravity/summary-titles";
 import { readAntigravityTranscriptTail } from "./adapters/antigravity/transcript-tail";
-import { antigravityBackendAlive, antigravityProcessAlive, codexProcessAlive, cursorProcessAlive, qoderProcessAlive, readProcessTable } from "./process-liveness";
+import { CodebuddySnapshotReader, codebuddySafeName, readCodebuddyTranscriptTail } from "./adapters/codebuddy/snapshot-reader";
+import { CodebuddyPoller } from "./adapters/codebuddy/poller";
+import { WorkbuddySnapshotReader, workbuddySafeName, readWorkbuddyTranscriptTail } from "./adapters/workbuddy/db-reader";
+import { WorkbuddyPoller } from "./adapters/workbuddy/poller";
+import { antigravityBackendAlive, antigravityProcessAlive, codebuddyProcessAlive, codexProcessAlive, cursorProcessAlive, qoderProcessAlive, readProcessTable, workbuddyProcessAlive } from "./process-liveness";
 import { EventFileWatcher, ensureSecureDir, rotateIfNeeded } from "./event-file";
 import { loadMarks, persistMarks } from "./state/marks-store";
 import { SessionTracker, type NotifyKind, type SessionView } from "./state/tracker";
@@ -69,6 +73,12 @@ const codexBgFilter = new BackgroundGraceFilter({
 /** 已进入跟踪的 codex 会话（宽限期 sweep 的复查范围） */
 const codexSeen = new Set<string>();
 
+// CodeBuddy CN（VS Code 派生）：无 hooks，genie-history 文件轮询（基于 lastUpdated 判活性）
+const codebuddyReader = new CodebuddySnapshotReader(process.env.TL_CODEBUDDY_GENIE ?? undefined);
+
+// WorkBuddy：无 hooks，本地会话库 + 心跳文件轮询 diff；事件内存直投
+const workbuddyReader = new WorkbuddySnapshotReader(process.env.TL_WORKBUDDY_HOME ?? undefined);
+
 // Qoder：无 hooks，本地任务快照轮询 diff（add-qoder-support D1/D2）；事件内存直投，不写 events.jsonl（隐私边界 D6）
 // TL_QODER_DB：调试用库路径覆盖（沙箱快照冒烟黄灯/红灯流转，不碰真实 Qoder 数据）
 const qoderReader = new QoderSnapshotReader(process.env.TL_QODER_DB ?? undefined);
@@ -92,6 +102,8 @@ const TOOL_MATCHERS: Record<string, (table: string) => boolean> = {
   codex: (t) => codexProcessAlive(t),
   qoder: (t) => qoderProcessAlive(t),
   antigravity: (t) => antigravityProcessAlive(t),
+  codebuddy: (t) => codebuddyProcessAlive(t),
+  workbuddy: (t) => workbuddyProcessAlive(t),
   // 伪工具通道：Antigravity 后端单独判定（D14 健康分层），复用同一份进程表缓存
   antigravity_backend: (t) => antigravityBackendAlive(t),
 };
@@ -126,7 +138,11 @@ function onNotify(kind: NotifyKind, session: SessionView): void {
       ? qoderNotifyName(session.sessionId)
       : session.tool === "antigravity"
         ? antigravitySafeName(session.sessionId)
-        : metaName(session.tool, session.sessionId)) ?? session.sessionId.slice(0, 8);
+        : session.tool === "workbuddy"
+          ? workbuddySafeName(session.sessionId)
+          : session.tool === "codebuddy"
+            ? codebuddySafeName(session.sessionId)
+            : metaName(session.tool, session.sessionId)) ?? session.sessionId.slice(0, 8);
   if (config.systemNotification && Notification.isSupported()) {
     const title = kind === "failed" ? t(lang, "notif_failed_title") : kind === "missed_question" ? t(lang, "notif_missed_title") : t(lang, "notif_waiting_title");
     const body = kind === "missed_question" ? t(lang, session.missedReason === "dismissed" ? "notif_dismissed_body" : "notif_missed_body", { name }) : name;
@@ -184,15 +200,23 @@ const tracker = new SessionTracker({
     qoder: { yellow: "exact", red: "exact", metadata: true, yellowPush: true, redIncludesAborted: false },
     // antigravity：黄灯推送型（结构 waiting diff），取消/中止不红（add-antigravity-support D7/D10）
     antigravity: { yellow: "exact", red: "exact", metadata: true, yellowPush: true, redIncludesAborted: false },
+    // codebuddy（VS Code 派生）：DB 轮询推送型（与 Qoder 同构），取消/中止不红
+    codebuddy: { yellow: "exact", red: "exact", metadata: true, yellowPush: true, redIncludesAborted: false },
+    // workbuddy：DB 轮询推送型（与 qoder 同构），取消/中止不红
+    workbuddy: { yellow: "exact", red: "exact", metadata: true, yellowPush: true, redIncludesAborted: false },
   },
   probe: (tool, sessionId) =>
     tool === "codex"
       ? codexProbeSnapshot(CODEX_SESSIONS_DIR, sessionId, codexRolloutPath(sessionId))
-      : tool === "qoder"
-        ? qoderPoller.probeSnapshot(sessionId)
-        : tool === "antigravity"
-          ? agyPoller.probeSnapshot(sessionId)
-          : snapshotFromBubbles(reader.isAvailable() ? reader.latestBubbles(sessionId, 6) : null, reader.composerHeader(sessionId)),
+      : tool === "codebuddy"
+        ? codebuddyPoller.probeSnapshot(sessionId)
+        : tool === "qoder"
+          ? qoderPoller.probeSnapshot(sessionId)
+          : tool === "antigravity"
+            ? agyPoller.probeSnapshot(sessionId)
+            : tool === "workbuddy"
+              ? workbuddyPoller.probeSnapshot(sessionId)
+              : snapshotFromBubbles(reader.isAvailable() ? reader.latestBubbles(sessionId, 6) : null, reader.composerHeader(sessionId)),
   resolveStop: (tool, sessionId, transcriptPath) =>
     tool === "codex" ? resolveCodexStop(CODEX_SESSIONS_DIR, sessionId, transcriptPath ?? codexRolloutPath(sessionId)) : null,
   isToolAlive,
@@ -229,6 +253,37 @@ const agyPoller = new AntigravityPoller({
   transcriptTail: (sessionId) => (AGY_HOME ? readAntigravityTranscriptTail(AGY_HOME, sessionId) : null),
 });
 
+// codebuddy 轮询 diff 管道：事件直投 tracker；结尾提问走 CodeBuddyExtension history 文件
+function codebuddyTranscriptTail(sessionId: string): string | null {
+  const info = codebuddyPoller.sessionInfo(sessionId);
+  return info ? readCodebuddyTranscriptTail(info.userId, info.workspacePath, info.sessionId) : null;
+}
+const codebuddyPoller = new CodebuddyPoller({
+  read: () => codebuddyReader.read(),
+  emit: (ev) => {
+    tracker.handleEvent(ev);
+    pushState();
+  },
+  clock: () => Date.now(),
+  transcriptTail: (sid) => codebuddyTranscriptTail(sid),
+});
+
+// workbuddy 轮询 diff 管道：事件直投 tracker，probe 走同一快照；结尾提问走对话尾部解析
+const WB_HOME = process.env.TL_WORKBUDDY_HOME ?? path.join(os.homedir(), ".workbuddy");
+function workbuddyTranscriptTail(sessionId: string): string | null {
+  const info = workbuddyPoller.sessionInfo(sessionId);
+  return readWorkbuddyTranscriptTail(WB_HOME, sessionId, info?.cwd ?? null);
+}
+const workbuddyPoller = new WorkbuddyPoller({
+  read: () => workbuddyReader.read(),
+  emit: (ev) => {
+    tracker.handleEvent(ev);
+    pushState();
+  },
+  clock: () => Date.now(),
+  transcriptTail: workbuddyTranscriptTail,
+});
+
 // 会话名缓存（cursor: composerData；codex: threads.title；qoder: 隐私安全合成名），1 分钟过期：改名后最多 1 分钟内更新到面板
 const nameCache = new Map<string, { name: string | null; at: number }>();
 /** qoder 通知专用安全名（D6）：workspace 目录名 + 短 id，不含 prompt 类内容 */
@@ -244,10 +299,17 @@ function metaName(tool: string, sessionId: string): string | null {
     return title ? sanitizeSessionName(title) || antigravitySafeName(sessionId) : antigravitySafeName(sessionId);
   }
   if (tool === "qoder") {
-    // 面板显示任务标题（Qoder 界面同源，D6 允许本地展示）；无标题回退安全名
     const info = qoderPoller.taskInfo(sessionId);
     if (!info) return null;
     return info.displayName ? sanitizeSessionName(info.displayName) || qoderSafeName(info.taskId, info.workspacePath) : qoderSafeName(info.taskId, info.workspacePath);
+  }
+  if (tool === "workbuddy") {
+    const info = workbuddyPoller.sessionInfo(sessionId);
+    return info?.title ? sanitizeSessionName(info.title) || workbuddySafeName(sessionId) : workbuddySafeName(sessionId);
+  }
+  if (tool === "codebuddy") {
+    const info = codebuddyPoller.sessionInfo(sessionId);
+    return info?.displayName ? sanitizeSessionName(info.displayName) || codebuddySafeName(sessionId) : codebuddySafeName(sessionId);
   }
   if (tool !== "cursor" && tool !== "codex") return null;
   const k = `${tool}:${sessionId}`;
@@ -341,9 +403,8 @@ function openSettings(): void {
 }
 
 function buildTray(): void {
-  // 彩色托盘图（用户决策：与定稿 App 图标位图一致，非 template）：scripts/gen-tray-icon.mjs
-  // 从 icon-1024.png 抠背景+下采样生成，@2x 由 createFromPath 自动加载
-  const icon = nativeImage.createFromPath(path.join(app.getAppPath(), "assets/icons/tray.png"));
+  // __dirname → dist/main；../../ 回到项目/asar 根，dev 和打包都正确
+  const icon = nativeImage.createFromPath(path.join(__dirname, "../../assets/icons/tray.png"));
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
   if (icon.isEmpty()) tray.setTitle("🚦");
   tray.setToolTip("AI Traffic Light");
@@ -428,6 +489,8 @@ async function startPipeline(): Promise<void> {
 
   // antigravity 启动基线：running 恢复、新鲜 waiting 恢复、历史终态静默（add-antigravity-support D20/D31）
   agyPoller.poll();
+  // workbuddy 启动基线
+  workbuddyPoller.poll();
 
   // composerData 兜底：发现事件文件之外的近期会话，注入为灰点（design.md D5）
   const known = new Set(tracker.sessions().map((s) => s.sessionId));
@@ -455,6 +518,8 @@ async function startPipeline(): Promise<void> {
       tracker.handleEvent({ v: 2, tool: "codex", sessionId: s.sessionId, event: "activity", ts: s.lastActiveAt, meta: {} });
     }
   }
+  // codebuddy 启动基线（VS Code 派生，与 Qoder 同构）
+  codebuddyPoller.poll();
   pushState();
 }
 
@@ -533,6 +598,8 @@ function registerIpc(): void {
     qoder: { state: qoderReader.health(), alive: isToolAlive("qoder") },
     // antigravity 多态健康（add-antigravity-support D14/D24）：app 与后端分层
     antigravity: { state: agySource.health(), alive: isToolAlive("antigravity"), backendAlive: isToolAlive("antigravity_backend") },
+    codebuddy: { state: codebuddyReader.health(), alive: isToolAlive("codebuddy") },
+    workbuddy: { state: workbuddyReader.health(), alive: isToolAlive("workbuddy") },
   }));
   ipcMain.handle("sound", async (_e, op: string, color: "yellow" | "red", filePath?: string) => {
     const dir = path.join(APP_HOME, "sounds");
@@ -591,6 +658,8 @@ if (!app.requestSingleInstanceLock()) {
       watcher?.poll(); // fsevents 丢事件（睡眠唤醒等）的轮询兜底
       qoderPoller.poll(); // qoder 无 hooks，靠快照轮询 diff 产事件
       agyPoller.poll(); // antigravity 无 hooks，靠会话库轮询 diff 产事件
+      codebuddyPoller.poll(); // codebuddy（VS Code 派生），靠 state.vscdb 轮询 diff
+      workbuddyPoller.poll(); // workbuddy 无 hooks，靠会话库轮询 diff 产事件
       tracker.tick();
       saveMarks();
       pushState();
