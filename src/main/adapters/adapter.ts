@@ -28,6 +28,13 @@ export interface SessionMetadata {
   createdAt?: number;
 }
 
+/** 工具外部的用户操作阻塞源，例如 macOS Keychain / SecurityAgent 弹窗。 */
+export interface UserActionBlocker {
+  key: string;
+  source: "system_dialog";
+  title?: string;
+}
+
 /** 精确黄灯探测结果；tentative=过渡窗口判定（气泡刚建、pending 未写），需持续确认后才亮黄 */
 export type ProbeResult =
   | { kind: "question_pending"; tentative?: boolean }

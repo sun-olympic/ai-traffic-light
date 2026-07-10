@@ -10,6 +10,7 @@ function s(partial: Partial<SessionView>): SessionView {
     waitingKind: null,
     missedQuestion: false,
     missedReason: null,
+    waitingCause: null,
     note: null,
     stateSince: 1000,
     lastEventAt: 1000,
@@ -116,6 +117,8 @@ describe("user_action 等待行（qoder）", () => {
       state: "waiting",
       waitingKind: "user_action",
       missedQuestion: false,
+      missedReason: null,
+      waitingCause: null,
       note: null,
       stateSince: 1000,
       lastEventAt: 1000,
@@ -125,6 +128,18 @@ describe("user_action 等待行（qoder）", () => {
     expect(row.canIgnore).toBe(false);
     expect(row.highlight).toBe(true);
     expect(buildDetailModel([v], "en", 2000).rows[0].statusLabel).toBe("Waiting for user action");
+  });
+
+  test("系统弹窗导致的用户操作等待使用专门文案", () => {
+    const v = s({
+      tool: "codex",
+      state: "waiting",
+      waitingKind: "user_action",
+      waitingCause: "system_dialog",
+    });
+
+    expect(buildDetailModel([v], "zh", 2000).rows[0].statusLabel).toBe("等待系统弹窗输入/确认");
+    expect(buildDetailModel([v], "en", 2000).rows[0].statusLabel).toBe("Waiting for system dialog input");
   });
 
   test("qoder 工具显示名为 Qoder", () => {

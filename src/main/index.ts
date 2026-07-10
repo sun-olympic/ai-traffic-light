@@ -24,7 +24,8 @@ import { CodebuddySnapshotReader, codebuddySafeName, readCodebuddyTranscriptTail
 import { CodebuddyPoller } from "./adapters/codebuddy/poller";
 import { WorkbuddySnapshotReader, workbuddySafeName, readWorkbuddyTranscriptTail } from "./adapters/workbuddy/db-reader";
 import { WorkbuddyPoller } from "./adapters/workbuddy/poller";
-import { antigravityBackendAlive, antigravityProcessAlive, codebuddyProcessAlive, codexProcessAlive, cursorProcessAlive, qoderProcessAlive, readProcessTable, workbuddyProcessAlive } from "./process-liveness";
+import { detectMacAuthDialogs, SystemDialogPoller } from "./adapters/system-dialog/poller";
+import { antigravityBackendAlive, antigravityProcessAlive, codebuddyProcessAlive, codexProcessAlive, cursorProcessAlive, qoderProcessAlive, readProcessArgsTable, readProcessTable, workbuddyProcessAlive } from "./process-liveness";
 import { EventFileWatcher, ensureSecureDir, rotateIfNeeded } from "./event-file";
 import { loadMarks, persistMarks } from "./state/marks-store";
 import { SessionTracker, type NotifyKind, type SessionView } from "./state/tracker";
@@ -217,6 +218,7 @@ const tracker = new SessionTracker({
             : tool === "workbuddy"
               ? workbuddyPoller.probeSnapshot(sessionId)
               : snapshotFromBubbles(reader.isAvailable() ? reader.latestBubbles(sessionId, 6) : null, reader.composerHeader(sessionId)),
+  externalUserAction: () => systemDialogPoller.activeBlocker(),
   resolveStop: (tool, sessionId, transcriptPath) =>
     tool === "codex" ? resolveCodexStop(CODEX_SESSIONS_DIR, sessionId, transcriptPath ?? codexRolloutPath(sessionId)) : null,
   isToolAlive,
@@ -266,6 +268,13 @@ const codebuddyPoller = new CodebuddyPoller({
   },
   clock: () => Date.now(),
   transcriptTail: (sid) => codebuddyTranscriptTail(sid),
+});
+
+// system dialog 轮询：macOS Keychain/SecurityAgent/osascript 输入框不会进入 AI 工具 DB，
+// 只能从系统进程层观察；作为 tracker 的外部阻塞源，不单独显示 system 会话。
+const systemDialogPoller = new SystemDialogPoller({
+  read: () => detectMacAuthDialogs(readProcessArgsTable()),
+  clock: () => Date.now(),
 });
 
 // workbuddy 轮询 diff 管道：事件直投 tracker，probe 走同一快照；结尾提问走对话尾部解析
@@ -501,6 +510,8 @@ async function startPipeline(): Promise<void> {
 
   // antigravity 启动基线：running 恢复、新鲜 waiting 恢复、历史终态静默（add-antigravity-support D20/D31）
   agyPoller.poll();
+  // system dialog 启动基线：启动时已经弹出的 Keychain/SecurityAgent/osascript 输入框也可被首个 tick 归属到运行会话
+  systemDialogPoller.poll();
   // workbuddy 启动基线
   workbuddyPoller.poll();
 
@@ -671,6 +682,7 @@ if (!app.requestSingleInstanceLock()) {
       qoderPoller.poll(); // qoder 无 hooks，靠快照轮询 diff 产事件
       agyPoller.poll(); // antigravity 无 hooks，靠会话库轮询 diff 产事件
       codebuddyPoller.poll(); // codebuddy（VS Code 派生），靠 state.vscdb 轮询 diff
+      systemDialogPoller.poll(); // macOS 系统级认证/钥匙串弹窗
       workbuddyPoller.poll(); // workbuddy 无 hooks，靠会话库轮询 diff 产事件
       tracker.tick();
       saveMarks();

@@ -15,6 +15,7 @@ export interface WorkbuddySession {
   sessionId: string;
   status: WorkbuddyStatus;
   updatedAt: number;
+  runtimeUpdatedAt?: number;
   title: string | null;
   customTitle: string | null;
   cwd: string | null;
@@ -105,7 +106,6 @@ export class WorkbuddySnapshotReader {
       return { sessions: [] };
     }
 
-    const now = Date.now();
     const sessionMap = new Map<string, WorkbuddySession>();
 
     // DB sessions 为基准
@@ -113,9 +113,27 @@ export class WorkbuddySnapshotReader {
       for (const s of dbSessions) sessionMap.set(s.sessionId, s);
     }
 
-    // 心跳文件不参与会话状态判定：
+    // 心跳只作为"完成态仍有运行时实例"的窄覆盖证据：
+    // - 不创建 DB 中不存在的会话（interactive-<pid> 是 CLI 后台进程，不作为用户会话跟踪）
+    // - 不覆盖 waiting / stopped / error，避免把真实等待或终态误清成绿灯
+    // - 不用心跳时间刷新 updatedAt，否则常驻心跳会让 poller 误判持续用户活动
+    const now = Date.now();
+    for (const hb of heartbeats) {
+      const sess = sessionMap.get(hb.sessionId);
+      if (!sess) continue;
+      const runtimeUpdatedAt = Math.max(hb.lastHeartbeat, hb.updatedAt);
+      if (now - runtimeUpdatedAt > HEARTBEAT_STALE_MS) continue;
+      if (sess.status === "completed") {
+        const runtimeStartedAfterCompletion = typeof hb.startedAt === "number" && hb.startedAt > sess.updatedAt;
+        sessionMap.set(hb.sessionId, { ...sess, status: runtimeStartedAfterCompletion ? "running" : "completed", runtimeUpdatedAt });
+      } else {
+        sessionMap.set(hb.sessionId, { ...sess, runtimeUpdatedAt });
+      }
+    }
+
+    // 其它心跳文件不参与会话状态判定：
     // - 进程存活由 process-liveness.ts 检测（ps comm 特征匹配）
-    // - 心跳 updatedAt 是进程活性时间戳，不等于用户交互——合并会让 poller 误判持续活动
+    // - 心跳 updatedAt 是进程活性时间戳，不等于用户交互
     // - 无 DB 对应的心跳（如 interactive-<pid>）是 CLI 后台进程，不作为用户会话跟踪
 
     this.lastHealth = "ok";

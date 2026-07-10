@@ -65,7 +65,7 @@ function statusLabel(v: SessionView, lang: Lang): string {
           // codex 批准瞬间无任何 hook（spike 1.3），黄灯可能滞留到 PostToolUse——标注消解"已批准还亮黄"的困惑
           return t(lang, v.tool === "codex" ? "waiting_approval_codex" : "waiting_approval");
         case "user_action":
-          return t(lang, "waiting_user_action");
+          return t(lang, v.waitingCause === "system_dialog" ? "waiting_system_dialog" : "waiting_user_action");
         case "trailing_question":
           return t(lang, "waiting_trailing");
         case "stuck":

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { antigravityBackendAlive, antigravityProcessAlive, anyProcessMatches, codexProcessAlive, cursorProcessAlive, parseTasklist, qoderProcessAlive, ANTIGRAVITY_PROCESS_PATTERNS, CODEX_PROCESS_PATTERNS, CURSOR_PROCESS_PATTERNS, QODER_PROCESS_PATTERNS } from "./process-liveness";
+import { antigravityBackendAlive, antigravityProcessAlive, anyProcessMatches, codexProcessAlive, cursorProcessAlive, parseTasklist, processTablePsArgs, qoderProcessAlive, ANTIGRAVITY_PROCESS_PATTERNS, CODEX_PROCESS_PATTERNS, CURSOR_PROCESS_PATTERNS, QODER_PROCESS_PATTERNS } from "./process-liveness";
 
 const PS_WITH_DESKTOP = [
   "/sbin/launchd",
@@ -19,6 +19,13 @@ const PS_ONLY_NOISE = [
   "/var/run/com.apple.security.cryptexd/codex.system/usr/libexec/foo",
   "/usr/libexec/trustd",
 ].join("\n");
+
+describe("process table command shape", () => {
+  test("liveness uses comm-only ps while dialog detection can opt into args", () => {
+    expect(processTablePsArgs(false)).toEqual(["-axo", "comm"]);
+    expect(processTablePsArgs(true)).toEqual(["-axo", "pid,etime,comm,args"]);
+  });
+});
 
 describe("Qoder 进程存活匹配（主进程 comm 为 Electron，按包路径前缀）", () => {
   test("主进程存活 → true", () => {

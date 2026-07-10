@@ -12,6 +12,7 @@ let alive: boolean;
 let transcript: string | null;
 let notifications: Array<{ kind: string; sessionId: string }>;
 let marks: Map<string, string>;
+let externalUserAction: TrackerDeps["externalUserAction"];
 
 function deps(config: Partial<AppConfig> = {}): TrackerDeps {
   return {
@@ -20,6 +21,7 @@ function deps(config: Partial<AppConfig> = {}): TrackerDeps {
     registry: { cursor: { yellow: "exact", red: "exact", metadata: true } },
     // Cursor 探针通路：气泡行 → 工具无关快照（判定器已下沉 Cursor adapter）
     probe: () => snapshotFromBubbles(bubbles, header),
+    externalUserAction: () => externalUserAction?.() ?? null,
     isToolAlive: () => alive,
     readTranscript: () => transcript,
     notify: (kind, session) => notifications.push({ kind, sessionId: session.sessionId }),
@@ -52,6 +54,7 @@ beforeEach(() => {
   transcript = null;
   notifications = [];
   marks = new Map();
+  externalUserAction = undefined;
 });
 
 describe("qoder user_action 通路", () => {
@@ -103,6 +106,59 @@ describe("qoder user_action 通路", () => {
     t.handleEvent(qev("activity"));
     t.handleEvent(qev("stop", { status: "error" }));
     expect(t.sessions()[0].state).toBe("failed");
+  });
+});
+
+describe("系统弹窗用户操作归属", () => {
+  function multiToolDeps(probe: TrackerDeps["probe"]): TrackerDeps {
+    return {
+      ...deps({ quietBeforeProbeMs: 60_000 }),
+      registry: {
+        cursor: { yellow: "exact", red: "exact", metadata: true },
+        codex: { yellow: "exact", red: "exact", metadata: true, yellowPush: true, redIncludesAborted: false },
+      },
+      probe,
+    };
+  }
+
+  const neutralProbe = () => ({ pending: { kind: "none" as const }, executing: true, stuckCandidate: false, missedQuestion: false });
+  const cev = (event: TrafficEvent["event"], sessionId: string, ts = now): TrafficEvent => ({ v: 2, tool: "codex", sessionId, event, ts, meta: {} });
+
+  test("运行中的任意工具遇到系统输入弹窗时，从绿灯切到自身黄灯", () => {
+    const t = new SessionTracker(multiToolDeps(neutralProbe));
+    t.handleEvent(ev("prompt", {}, "cursor-1"));
+    now += 1000;
+    t.handleEvent(cev("prompt", "codex-1"));
+
+    externalUserAction = () => ({ key: "macos-input-dialog", source: "system_dialog", title: "macOS input prompt" });
+    t.tick();
+
+    const rows = t.sessions();
+    expect(rows.find((s) => s.tool === "codex")?.waitingKind).toBe("user_action");
+    expect(rows.find((s) => s.tool === "codex")?.waitingCause).toBe("system_dialog");
+    expect(rows.find((s) => s.tool === "cursor")?.state).toBe("running");
+    expect(t.aggregate().color).toBe("yellow");
+
+    externalUserAction = undefined;
+    now += 2000;
+    t.tick();
+    expect(t.sessions().find((s) => s.tool === "codex")?.state).toBe("running");
+  });
+
+  test("系统弹窗打开后保持最初归属，不被其他会话后续活动抢走", () => {
+    const t = new SessionTracker(multiToolDeps(neutralProbe));
+    t.handleEvent(ev("prompt", {}, "cursor-1"));
+    now += 1000;
+    t.handleEvent(cev("prompt", "codex-1"));
+    externalUserAction = () => ({ key: "macos-input-dialog", source: "system_dialog", title: "macOS input prompt" });
+    t.tick();
+
+    now += 1000;
+    t.handleEvent(ev("activity", {}, "cursor-1"));
+    t.tick();
+
+    expect(t.sessions().find((s) => s.tool === "codex")?.waitingKind).toBe("user_action");
+    expect(t.sessions().find((s) => s.tool === "cursor")?.state).toBe("running");
   });
 });
 

@@ -97,12 +97,27 @@ export function parseTasklist(csv: string): string {
   return names.join("\n");
 }
 
+export function processTablePsArgs(includeArgs: boolean): string[] {
+  return includeArgs ? ["-axo", "pid,etime,comm,args"] : ["-axo", "comm"];
+}
+
 export function readProcessTable(platform: string = process.platform): string {
   try {
     if (platform === "win32") {
       return parseTasklist(execFileSync("tasklist", ["/fo", "csv", "/nh"], { encoding: "utf-8" }));
     }
-    return execFileSync("ps", ["-axo", "comm"], { encoding: "utf-8" });
+    return execFileSync("ps", processTablePsArgs(false), { encoding: "utf-8" });
+  } catch {
+    return "";
+  }
+}
+
+export function readProcessArgsTable(platform: string = process.platform): string {
+  try {
+    if (platform === "win32") {
+      return parseTasklist(execFileSync("tasklist", ["/fo", "csv", "/nh"], { encoding: "utf-8" }));
+    }
+    return execFileSync("ps", processTablePsArgs(true), { encoding: "utf-8" });
   } catch {
     return "";
   }

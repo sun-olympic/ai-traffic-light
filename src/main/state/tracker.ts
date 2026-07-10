@@ -4,7 +4,7 @@
 // Cursor 专属的气泡判定已下沉到 adapters/cursor/bubble-judge。
 import type { AppConfig } from "../../shared/config";
 import type { TrafficEvent } from "../../shared/events";
-import type { CapabilityFlags, MissedReason, ProbeSnapshot, StopResolution } from "../adapters/adapter";
+import type { CapabilityFlags, MissedReason, ProbeSnapshot, StopResolution, UserActionBlocker } from "../adapters/adapter";
 import { SessionMachine, type SessionState, type WaitingKind } from "./session-machine";
 import { isTrailingQuestion, lastAssistantText } from "./trailing-question";
 
@@ -15,6 +15,7 @@ export interface SessionView {
   sessionId: string;
   state: SessionState;
   waitingKind: WaitingKind | null;
+  waitingCause: UserActionBlocker["source"] | null;
   missedQuestion: boolean;
   /** 错过提问的具体原因（无标记或旧版标记无原因时为 null） */
   missedReason: MissedReason | null;
@@ -30,6 +31,8 @@ export interface TrackerDeps {
   registry: Record<string, CapabilityFlags>;
   /** 定向探测某会话的工具无关快照；null = 探针通道不可用（降级） */
   probe: (tool: string, sessionId: string) => ProbeSnapshot | null;
+  /** 工具外部的系统级用户输入阻塞源；tracker 负责归属到最可能的运行中会话 */
+  externalUserAction?: () => UserActionBlocker | null;
   isToolAlive: (tool: string) => boolean;
   readTranscript: (path: string) => string | null;
   /** 无状态 stop 的终态解析（codex 回读 rollout 尾部）；null = 解析失败（兜底 completed） */
@@ -61,6 +64,9 @@ interface Tracked {
   lastTokenChangeAt: number;
   /** 作答即清后的错过提问补查窗口截止（气泡落盘滞后，作答与自动跳过要等落盘才可分辨） */
   missedCheckUntil: number;
+  /** 外部用户操作阻塞源（如系统弹窗）归属到本会话时的 blocker key */
+  externalUserActionKey: string | null;
+  waitingCause: UserActionBlocker["source"] | null;
 }
 
 /** tentative 提问确认期：气泡建库比弹窗展示早约 2s，短于此时长不亮黄；4s 实测偏晚 */
@@ -86,6 +92,7 @@ export class SessionTracker {
   private readonly tracked = new Map<string, Tracked>();
   private readonly backgroundIgnored = new Set<string>();
   private readonly notified = new Set<string>();
+  private readonly externalUserActionOwners = new Map<string, string>();
   /** 按工具记录探针降级：混合会话下 Cursor DB 挂了不能被同 tick 的 Codex 探测成功掩盖 */
   private readonly degradedTools = new Set<string>();
 
@@ -123,7 +130,20 @@ export class SessionTracker {
     let t = this.tracked.get(k);
     if (!t) {
       const caps = this.deps.registry[ev.tool] ?? NO_CAPABILITIES;
-      t = { machine: new SessionMachine(ev.tool, ev.sessionId, caps), pendingExec: null, stuckSince: null, lastStopTs: 0, note: null, wakeResetAt: 0, askTentativeSince: null, lastToken: null, lastTokenChangeAt: 0, missedCheckUntil: 0 };
+      t = {
+        machine: new SessionMachine(ev.tool, ev.sessionId, caps),
+        pendingExec: null,
+        stuckSince: null,
+        lastStopTs: 0,
+        note: null,
+        wakeResetAt: 0,
+        askTentativeSince: null,
+        lastToken: null,
+        lastTokenChangeAt: 0,
+        missedCheckUntil: 0,
+        externalUserActionKey: null,
+        waitingCause: null,
+      };
       this.tracked.set(k, t);
     }
     t.note = null;
@@ -134,6 +154,14 @@ export class SessionTracker {
     t.stuckSince = null;
 
     t.machine.handle(ev);
+
+    if (ev.event === "user_action_required") {
+      t.waitingCause = ev.meta.source === "system_dialog" ? "system_dialog" : null;
+      t.externalUserActionKey = typeof ev.meta.blockerKey === "string" ? ev.meta.blockerKey : null;
+    } else if (t.machine.state !== "waiting") {
+      t.waitingCause = null;
+      t.externalUserActionKey = null;
+    }
 
     if (ev.event === "before_exec") {
       t.pendingExec = { ts: ev.ts, kind: String(ev.meta.kind ?? "shell"), command: ev.meta.command as string | undefined, toolName: ev.meta.toolName as string | undefined };
@@ -179,6 +207,9 @@ export class SessionTracker {
   /** 周期驱动（建议 2~5s 一次）：GC、存活检测、黄灯探测、卡死计时 */
   tick(): void {
     const now = this.deps.clock();
+    const externalAction = this.deps.externalUserAction?.() ?? null;
+    if (!externalAction) this.externalUserActionOwners.clear();
+    const externalOwnerKey = externalAction ? this.resolveExternalUserActionOwner(externalAction) : null;
 
     for (const [k, t] of this.tracked) {
       if (now - t.machine.lastEventAt > this.config.sessionGcMs) {
@@ -202,14 +233,47 @@ export class SessionTracker {
         }
         continue;
       }
-      this.tickSession(t, now);
+      this.tickSession(t, now, k === externalOwnerKey ? externalAction : null);
       this.emitTransitions(t);
     }
   }
 
-  private tickSession(t: Tracked, now: number): void {
+  private resolveExternalUserActionOwner(action: UserActionBlocker): string | null {
+    const existing = this.externalUserActionOwners.get(action.key);
+    if (existing) {
+      const t = this.tracked.get(existing);
+      if (t && (t.machine.state === "running" || (t.machine.state === "waiting" && t.externalUserActionKey === action.key))) {
+        return existing;
+      }
+    }
+
+    const candidates = [...this.tracked.entries()].filter(([, t]) => t.machine.tool !== "system" && t.machine.state === "running");
+    const pendingExec = candidates
+      .filter(([, t]) => t.pendingExec !== null)
+      .sort((a, b) => (b[1].pendingExec!.ts - a[1].pendingExec!.ts) || (b[1].machine.lastEventAt - a[1].machine.lastEventAt));
+    const selected = (pendingExec[0] ?? candidates.sort((a, b) => b[1].machine.lastEventAt - a[1].machine.lastEventAt)[0])?.[0] ?? null;
+    if (selected) this.externalUserActionOwners.set(action.key, selected);
+    return selected;
+  }
+
+  private tickSession(t: Tracked, now: number, externalAction: UserActionBlocker | null = null): void {
     const m = t.machine;
     if (m.state !== "running" && m.state !== "waiting") return;
+
+    if (externalAction) {
+      m.setWaiting("user_action", now);
+      t.waitingCause = externalAction.source;
+      t.externalUserActionKey = externalAction.key;
+      t.stuckSince = null;
+      return;
+    }
+    if (m.state === "waiting" && m.waitingKind === "user_action" && t.externalUserActionKey !== null) {
+      t.waitingCause = null;
+      t.externalUserActionKey = null;
+      m.clearWaiting(now);
+      return;
+    }
+
     // 同 tick 内探测结果复用（审批分支已查过就不再查第二次，探测是同步 DB/文件 IO）
     let snap: ProbeSnapshot | null | undefined;
 
@@ -293,10 +357,14 @@ export class SessionTracker {
     }
     // user_action（qoder）：探针即快照实况，直接亮/清（清灯回 running 由下方统一处理）
     if (pending.kind === "user_action_pending") {
+      t.waitingCause = null;
+      t.externalUserActionKey = null;
       m.setWaiting("user_action", now);
       return;
     }
     if (m.state === "waiting" && m.waitingKind === "user_action") {
+      t.waitingCause = null;
+      t.externalUserActionKey = null;
       m.clearWaiting(now);
       return;
     }
@@ -442,6 +510,7 @@ export class SessionTracker {
       sessionId: sid,
       state: t.machine.state,
       waitingKind: t.machine.waitingKind,
+      waitingCause: t.waitingCause,
       missedQuestion: this.deps.marks.has(markKey.missed(tool, sid)),
       missedReason: this.missedReasonOf(tool, sid),
       note: t.note,
