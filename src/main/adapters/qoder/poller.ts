@@ -20,6 +20,7 @@ interface SeenTask {
 }
 
 const TERMINAL: Record<string, StopResolution["status"]> = { completed: "completed", stopped: "aborted", error: "error" };
+const QODER_CHAT_SESSION_ID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
 export class QoderPoller {
   private readonly deps: QoderPollerDeps;
@@ -102,14 +103,15 @@ export class QoderPoller {
   /**
    * 探针通路（tracker probe 注入）：读最新快照按 canonical id 定位任务。
    * running=执行中（防审批/卡死误报）；user_action=专属挂起；终态带 terminal 保险丝（diff 事件丢失兜底）；
-   * 任务缺失返回中性快照（不误标降级）；读取失败返回 null（真降级）。
+   * 普通任务 id 缺失返回中性快照；hook 的聊天 UUID 不在旧任务快照中，返回 null 保留推送黄灯。
+   * 读取失败也返回 null（真降级）。
    */
   probeSnapshot(sessionId: string): ProbeSnapshot | null {
     const snap = this.deps.read();
     if (snap === null) return null;
     const t = snap.tasks.find((x) => x.canonicalId === sessionId);
     const neutral: ProbeSnapshot = { pending: { kind: "none" }, executing: false, stuckCandidate: false, missedQuestion: false };
-    if (!t) return neutral;
+    if (!t) return QODER_CHAT_SESSION_ID.test(sessionId) ? null : neutral;
     if (t.status === "running") return { ...neutral, executing: true };
     if (t.status === "user_action") return { ...neutral, pending: { kind: "user_action_pending" } };
     const terminal = TERMINAL[t.status];

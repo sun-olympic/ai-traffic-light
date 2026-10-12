@@ -201,6 +201,7 @@ describe("probeSnapshot（探针通路）", () => {
     snap = { tasks: [] };
     poller.poll();
     expect(poller.probeSnapshot("ghost")?.pending.kind).toBe("none");
+    expect(poller.probeSnapshot("3e7e3c58-6e3e-48b1-9038-6cc5c8fd1c14")).toBeNull();
     snap = null;
     expect(poller.probeSnapshot("ghost")).toBeNull();
   });

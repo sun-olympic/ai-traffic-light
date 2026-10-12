@@ -15,6 +15,8 @@ import { codexProbeSnapshot, latestRolloutActivityAt, resolveCodexStop, scanRece
 import { BackgroundGraceFilter, CodexThreadsReader } from "./adapters/codex/threads-reader";
 import { defaultQoderCacheDir, QoderSnapshotReader, qoderSafeName, qoderTranscriptPath } from "./adapters/qoder/snapshot-reader";
 import { QoderPoller } from "./adapters/qoder/poller";
+import { QoderHooksInstaller } from "./adapters/qoder/hooks-installer";
+import { QoderSessionNameReader } from "./adapters/qoder/session-name-reader";
 import { defaultAntigravityHome } from "./adapters/antigravity/store-locator";
 import { antigravitySafeName, AntigravitySnapshotSource } from "./adapters/antigravity/snapshot-source";
 import { AntigravityPoller } from "./adapters/antigravity/poller";
@@ -31,6 +33,7 @@ import { loadMarks, persistMarks } from "./state/marks-store";
 import { SessionTracker, type NotifyKind, type SessionView } from "./state/tracker";
 
 const APP_HOME = path.join(os.homedir(), ".ai-traffic-light");
+const QODER_DIR = path.join(os.homedir(), ".qoder");
 const CONFIG_FILE = path.join(APP_HOME, "config.json");
 const MARKS_FILE = path.join(APP_HOME, "marks.json");
 const WINDOW_FILE = path.join(APP_HOME, "window.json");
@@ -62,6 +65,7 @@ const installer = new HooksInstaller({ appHome: APP_HOME, cursorDir: path.join(o
 const CODEX_DIR = path.join(os.homedir(), ".codex");
 const CODEX_SESSIONS_DIR = path.join(CODEX_DIR, "sessions");
 const codexInstaller = new CodexHooksInstaller({ appHome: APP_HOME, codexDir: CODEX_DIR });
+const qoderHooksInstaller = new QoderHooksInstaller({ appHome: APP_HOME, qoderDir: QODER_DIR });
 const codexThreads = new CodexThreadsReader(CODEX_DIR);
 /** codex 会话 → rollout 路径缓存（事件 meta 的 transcriptPath，probe/resolver 定位用） */
 const codexTranscripts = new Map<string, string>();
@@ -83,6 +87,7 @@ const workbuddyReader = new WorkbuddySnapshotReader(process.env.TL_WORKBUDDY_HOM
 // Qoder：无 hooks，本地任务快照轮询 diff（add-qoder-support D1/D2）；事件内存直投，不写 events.jsonl（隐私边界 D6）
 // TL_QODER_DB：调试用库路径覆盖（沙箱快照冒烟黄灯/红灯流转，不碰真实 Qoder 数据）
 const qoderReader = new QoderSnapshotReader(process.env.TL_QODER_DB ?? undefined);
+const qoderNames = new QoderSessionNameReader();
 const QODER_CACHE_DIR = defaultQoderCacheDir();
 
 // Antigravity：无 hooks，本地会话库轮询 diff（add-antigravity-support D1/D6）；事件内存直投，不写 events.jsonl
@@ -308,6 +313,8 @@ function metaName(tool: string, sessionId: string): string | null {
     return title ? sanitizeSessionName(title) || antigravitySafeName(sessionId) : antigravitySafeName(sessionId);
   }
   if (tool === "qoder") {
+    const title = qoderNames.title(sessionId);
+    if (title) return sanitizeSessionName(title) || sessionId.slice(0, 8);
     const info = qoderPoller.taskInfo(sessionId);
     if (!info) return null;
     return info.displayName ? sanitizeSessionName(info.displayName) || qoderSafeName(info.taskId, info.workspacePath) : qoderSafeName(info.taskId, info.workspacePath);
@@ -496,7 +503,19 @@ const codexBgIgnored = new Set<string>();
 async function startPipeline(): Promise<void> {
   ensureSecureDir(APP_HOME);
   // 事件路径不落盘标记：handleEvent 不写 marks（写点只在 tick 探测与用户操作，各自已带 saveMarks）
-  watcher = new EventFileWatcher(APP_HOME, (ev) => {
+  watcher = new EventFileWatcher(APP_HOME, (inputEvent) => {
+    let ev = inputEvent;
+    if (ev.tool === "qoder") {
+      const assistantQuestion = qoderNames.latestAssistantQuestion(ev.sessionId, config.questionWords);
+      if (assistantQuestion) {
+        if (ev.event === "stop" && ev.meta.status === "completed") {
+          ev = { ...ev, meta: { ...ev.meta, resolvedLastMessage: assistantQuestion } };
+        } else if (!["prompt", "session_start", "session_end", "user_action_required"].includes(ev.event)) {
+          // Qoder 会在 Stop/QueryEnd 后迟到写入工具活动；未有新用户消息前不能让其清掉黄灯。
+          return;
+        }
+      }
+    }
     if (!admitCodexEvent(ev)) return;
     tracker.handleEvent(ev);
     pushState();
@@ -670,6 +689,16 @@ if (!app.requestSingleInstanceLock()) {
     else if (await installer.everInstalled()) await installer.install(enabledHookEvents());
     // codex 同理：脚本内容刷新不破坏信任（哈希只锁 hooks.json 条目定义）
     if ((await codexInstaller.status()).installed) await codexInstaller.ensureFresh();
+    // Qoder 支持 settings.json hooks；只在已存在 Qoder 配置目录时合并安装，保留用户已有设置。
+    if (fs.existsSync(QODER_DIR)) {
+      try {
+        const qoderHookStatus = await qoderHooksInstaller.status();
+        if (qoderHookStatus.installed) await qoderHooksInstaller.ensureFresh();
+        else await qoderHooksInstaller.install();
+      } catch (error) {
+        console.warn("[qoder-hooks] unable to install status hooks:", error);
+      }
+    }
     await startPipeline();
 
     setInterval(() => {
