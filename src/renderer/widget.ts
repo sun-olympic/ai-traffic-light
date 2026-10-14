@@ -1,4 +1,6 @@
-// 悬浮窗渲染逻辑（无框架、无 import，tsc 直出浏览器可用 JS）
+import { COLLAPSED_WINDOW_WIDTH, fitWindowHeight } from "../shared/widget-layout.js";
+
+// 悬浮窗渲染逻辑（无框架；构建后由 Chromium 原生模块加载）
 interface RowVM {
   tool: string;
   sessionId: string;
@@ -101,7 +103,7 @@ function makeRow(r: RowVM, lang: string): HTMLLIElement {
 }
 
 // 宽度只用两档常量：实测宽度会随渲染时序抖动（滚动条/字体），导致右缘锚定时窗口横跳
-const COLLAPSED_W = 92;
+const COLLAPSED_W = COLLAPSED_WINDOW_WIDTH;
 const EXPANDED_W = 340;
 
 // 记住上次锚定方向：改窗口尺寸前先按它设好右对齐布局，
@@ -125,7 +127,7 @@ function syncSize(): void {
   const widget = document.getElementById("widget")!;
   // toast 显示期间保持 toast 档宽度，否则周期性状态推送会把窗口缩回去造成横跳
   const w = expanded ? EXPANDED_W : $("toast").hidden ? COLLAPSED_W : TOAST_W;
-  const h = Math.min(700, Math.max(250, widget.scrollHeight + 10));
+  const h = fitWindowHeight(widget.scrollHeight, expanded ? 250 : 1);
   void resizeTo(w, h);
 }
 

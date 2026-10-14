@@ -31,6 +31,7 @@ import { antigravityBackendAlive, antigravityProcessAlive, codebuddyProcessAlive
 import { EventFileWatcher, ensureSecureDir, rotateIfNeeded } from "./event-file";
 import { loadMarks, persistMarks } from "./state/marks-store";
 import { SessionTracker, type NotifyKind, type SessionView } from "./state/tracker";
+import { COLLAPSED_WINDOW_HEIGHT, COLLAPSED_WINDOW_WIDTH } from "../shared/widget-layout";
 
 const APP_HOME = path.join(os.homedir(), ".ai-traffic-light");
 const QODER_DIR = path.join(os.homedir(), ".qoder");
@@ -355,7 +356,7 @@ function metaName(tool: string, sessionId: string): string | null {
 }
 
 // ---- 窗口 ----
-const COLLAPSED_W = 92;
+const COLLAPSED_W = COLLAPSED_WINDOW_WIDTH;
 const MAX_PANEL_W = 360;
 let widget: BrowserWindow | null = null;
 let settingsWin: BrowserWindow | null = null;
@@ -385,8 +386,8 @@ function loadWindowPos(): { x?: number; y?: number } {
 function createWidget(): void {
   const pos = loadWindowPos();
   widget = new BrowserWindow({
-    width: 92,
-    height: 250,
+    width: COLLAPSED_WINDOW_WIDTH,
+    height: COLLAPSED_WINDOW_HEIGHT,
     x: pos.x,
     y: pos.y,
     frame: false,
