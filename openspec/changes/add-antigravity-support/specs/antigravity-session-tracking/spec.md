@@ -65,6 +65,10 @@ The system SHALL normalize Antigravity structural step status (`CortexStepStatus
 - **WHEN** a non-cancel structural terminal error (`ERROR`, or `INVALID` with error evidence) is observed after baseline
 - **THEN** the session enters failed state
 
+#### Scenario: Executor failure despite DONE steps becomes red
+- **WHEN** the latest executor metadata has a nonempty structured failure field while the step observation otherwise looks completed
+- **THEN** the session enters failed state without matching or persisting the failure message text
+
 #### Scenario: Unknown status is conservative
 - **WHEN** an unknown, reserved, or unmapped status value (including value 10/`HALTED` and `INTERRUPTED` without error/cancel context) is observed
 - **THEN** the system preserves current state and does not map it to running, waiting, or failed
@@ -74,11 +78,11 @@ The system SHALL normalize Antigravity structural step status (`CortexStepStatus
 - **THEN** the system prefers trajectory-level structural state over the last row
 
 #### Scenario: Fresh terminal-looking store is in progress
-- **WHEN** the structural state looks terminal (all steps DONE, or a trailing error/cancel row) but the store mtime is within the terminal quiet window
+- **WHEN** the structural state looks terminal (all steps DONE, or a trailing error/cancel row) but the store mtime is within the 30-second terminal quiet window
 - **THEN** the session is treated as running because Antigravity only persists steps on completion and the active step is not visible
 
 #### Scenario: Terminal state is confirmed after write quiescence
-- **WHEN** a terminal-looking structural state persists and the store mtime has been quiet beyond the terminal quiet window
+- **WHEN** a terminal-looking structural state persists and the store mtime has been quiet beyond the 30-second terminal quiet window
 - **THEN** the system confirms the terminal state and emits the corresponding stop with the store mtime as its stable timestamp
 
 ### Requirement: Antigravity Exact Yellow
@@ -111,6 +115,10 @@ The system SHALL baseline existing Antigravity state at startup without fresh al
 - **WHEN** the app starts and a conversation store already contains a terminal state
 - **THEN** no fresh failed or trailing-question notification is emitted for that historical state
 
+#### Scenario: Recent explicit executor failure survives restart
+- **WHEN** the app starts within the fresh-state window after an explicitly marked executor failure
+- **THEN** the failure is restored as red unless the user has already acknowledged that episode
+
 #### Scenario: New terminal after baseline alerts
 - **WHEN** a baselined session later transitions to a non-cancel structural terminal error
 - **THEN** the normal failed-session notification is emitted
@@ -131,16 +139,20 @@ The system SHALL baseline existing Antigravity state at startup without fresh al
 - **WHEN** the same structural terminal evidence is observed across polls or restarts
 - **THEN** the emitted stop timestamp is stable so acknowledgement and ignore marks remain effective
 
-### Requirement: Antigravity Transcript Tail Use
-The system SHALL use Antigravity transcripts only as a bounded, in-memory tail source for trailing-question detection after structural completion, bypassing the generic transcript reader.
+### Requirement: Antigravity Transcript Use
+The system SHALL use bounded Antigravity transcript reads for trailing-question detection and, when no legacy SQLite store exists for a session, as a fallback source of whitelisted structural status fields. Transcript message content SHALL NOT determine running or error state; it may only trigger the existing trailing-question waiting path after completion.
 
 #### Scenario: Trailing question after completion
 - **WHEN** a session completes structurally and the bounded transcript tail yields a final assistant message that is a trailing question
 - **THEN** the session is marked waiting with kind `trailing_question` via the resolved-message path
 
-#### Scenario: Transcript running is ignored
-- **WHEN** transcript lines report `RUNNING` while the structural store indicates terminal
-- **THEN** the transcript does not override the structural state
+#### Scenario: Transcript structural status is a fallback
+- **WHEN** a session has no legacy SQLite store and a transcript record contains a recognized structural status
+- **THEN** the status contributes to the session observation without reading or interpreting message content
+
+#### Scenario: SQLite remains authoritative unless a newer transcript has later steps
+- **WHEN** both a legacy SQLite store and a transcript exist for the same session
+- **THEN** the SQLite observation takes precedence at the same step index, but a newer transcript with a higher step index may lead while SQLite writes lag
 
 #### Scenario: Stop events carry no transcript path
 - **WHEN** the system emits an Antigravity stop event
@@ -184,9 +196,9 @@ The system SHALL expose Antigravity liveness and multi-state collection health w
 - **WHEN** the Antigravity home exists but cannot be read due to permissions
 - **THEN** settings health reports the permission problem rather than showing "no sessions"
 
-#### Scenario: Logs never drive lamp states
-- **WHEN** Antigravity log files contain error-looking lines
-- **THEN** no session becomes yellow or red because of log text
+#### Scenario: Free text never drives lamp states
+- **WHEN** Antigravity transcript or log message content contains error-looking or question-like text
+- **THEN** no session becomes running or failed because of message content; only whitelisted structural status fields may contribute to the fallback observation, except for the explicit trailing-question check after completion
 
 ### Requirement: Antigravity Stale State Handling
 The system SHALL prevent stale Antigravity state from keeping sessions green or yellow indefinitely, and SHALL NOT treat disappearance of local state as completion.
@@ -201,4 +213,4 @@ The system SHALL prevent stale Antigravity state from keeping sessions green or 
 
 #### Scenario: Bounded polling
 - **WHEN** the Antigravity directory contains many historical files
-- **THEN** each poll scans only recent conversation DBs by mtime with a capped candidate count and does not parse `.pb` history in the hot path
+- **THEN** each poll scans capped, recent SQLite and transcript candidates by mtime and does not parse opaque `.pb` history in the hot path

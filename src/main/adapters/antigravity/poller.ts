@@ -12,6 +12,8 @@ export interface SessionSnapshot {
   /** 库源 mtime：终态事件的稳定时间戳（D37）与基线新鲜度（D31）依据 */
   mtime: number;
   epoch: number;
+  /** 独立执行器元数据明确标记的失败，可绕过步骤写入静默窗。 */
+  confirmedError?: boolean;
 }
 
 export interface AntigravitySnapshot {
@@ -43,7 +45,7 @@ interface SeenSession {
 }
 
 const DEFAULT_FRESH_WAITING_MS = 600_000;
-// ponytail: 30s 静默窗是经验值——超长工具步（窗口内无落行）会提前判完成、下一行落库时按新 episode 复活；
+// 当前步骤未落盘时无法与真正完成区分；保留 30s 静默窗，避免长模型步骤间隙提前发 stop。
 // 升级路径是 D26 的 trajectory 级结构解码（waiting_steps/fully_idle）取代 mtime 静默启发式
 const DEFAULT_TERMINAL_QUIET_MS = 30_000;
 
@@ -69,6 +71,7 @@ export class AntigravityPoller {
    */
   private effectiveObservation(s: SessionSnapshot): SessionObservation {
     const obs = s.observation;
+    if (obs.kind === "error" && s.confirmedError) return obs;
     if (!(obs.kind in TERMINAL_STATUS)) return obs;
     const quiet = this.deps.terminalQuietMs ?? DEFAULT_TERMINAL_QUIET_MS;
     if (this.deps.clock() - s.mtime < quiet) return { ...obs, kind: "running" };
@@ -102,6 +105,9 @@ export class AntigravityPoller {
     const kind = s.observation.kind;
     if (kind === "running") {
       this.emit(s.sessionId, "activity", this.deps.clock(), {});
+    } else if (kind === "error" && s.confirmedError && this.deps.clock() - s.mtime <= (this.deps.freshWaitingMs ?? DEFAULT_FRESH_WAITING_MS)) {
+      // 近期、明确的执行器失败在重启后仍应可见；历史失败不重新告警。
+      this.emitStop(s, kind);
     } else if (kind === "waiting" && this.deps.clock() - s.mtime <= (this.deps.freshWaitingMs ?? DEFAULT_FRESH_WAITING_MS)) {
       // ts 用 mtime：跨重启同一等待的通知 episode 键稳定（D37）
       this.emit(s.sessionId, "user_action_required", s.mtime, {});

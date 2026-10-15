@@ -34,6 +34,15 @@ describe("readAntigravityTranscriptTail（D38 有界尾部解析）", () => {
     expect(readAntigravityTranscriptTail(home, "s1")).toBe("要继续吗？");
   });
 
+  test("Antigravity 新版 source=MODEL 的 Planner 回复也作为 assistant 尾问读取", () => {
+    const d = logsDir("model-source");
+    writeFileSync(join(d, "transcript.jsonl"), [
+      line("USER_EXPLICIT", "Please ask me a question."),
+      line("MODEL", "Do you prefer coffee or tea?"),
+    ].join("\n"));
+    expect(readAntigravityTranscriptTail(home, "model-source")).toBe("Do you prefer coffee or tea?");
+  });
+
   test("无 assistant 行 / content 非字符串 → null（保守，D38）", () => {
     const d = logsDir("s2");
     writeFileSync(join(d, "transcript.jsonl"), [line("tool", "x"), line("assistant", { rich: "object" })].join("\n"));

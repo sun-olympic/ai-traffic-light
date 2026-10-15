@@ -803,6 +803,113 @@ describe("GC 与背景过滤与存活（3.5/3.6/3.7）", () => {
     expect(t.dbDegraded()).toBe(false);
   });
 
+  test("探针降级的会话结束后，橙点立即熄灭", () => {
+    const t = new SessionTracker(deps());
+    t.handleEvent(ev("prompt"));
+    bubbles = null;
+    now += 6000;
+    t.tick();
+    expect(t.dbDegraded()).toBe(true);
+
+    t.handleEvent(ev("stop", { status: "completed" }));
+    expect(t.dbDegraded()).toBe(false);
+  });
+
+  test("同一工具的健康会话不会掩盖另一条会话的探针降级", () => {
+    const d = deps();
+    d.probe = (_tool, sessionId) => sessionId === "s1" ? null : snapshotFromBubbles([]);
+    const t = new SessionTracker(d);
+    t.handleEvent(ev("prompt", {}, "s1"));
+    t.handleEvent(ev("prompt", {}, "s2"));
+    now += 6000;
+    t.tick();
+
+    expect(t.dbDegraded("cursor")).toBe(true);
+  });
+
+  test("降级会话收到 session_end 后，橙点熄灭", () => {
+    const t = new SessionTracker(deps());
+    t.handleEvent(ev("prompt"));
+    bubbles = null;
+    now += 6000;
+    t.tick();
+    expect(t.dbDegraded()).toBe(true);
+
+    t.handleEvent(ev("session_end"));
+    expect(t.dbDegraded()).toBe(false);
+  });
+
+  test("降级会话被 GC 回收后，橙点熄灭", () => {
+    const t = new SessionTracker(deps({ sessionGcMs: 10_000 }));
+    t.handleEvent(ev("prompt"));
+    bubbles = null;
+    now += 6000;
+    t.tick();
+    expect(t.dbDegraded()).toBe(true);
+
+    now += 4001;
+    t.tick();
+    expect(t.sessions()).toHaveLength(0);
+    expect(t.dbDegraded()).toBe(false);
+  });
+
+  test("降级会话随工具退出转为 idle 后，橙点熄灭", () => {
+    const t = new SessionTracker(deps());
+    t.handleEvent(ev("prompt"));
+    bubbles = null;
+    now += 6000;
+    t.tick();
+    expect(t.dbDegraded()).toBe(true);
+
+    alive = false;
+    now += 36_000;
+    t.tick();
+    expect(t.sessions()[0].state).toBe("idle");
+    expect(t.dbDegraded()).toBe(false);
+  });
+
+  test("降级会话的软黄灯被忽略后，橙点熄灭", () => {
+    const t = new SessionTracker(deps({ inactiveThresholdMs: 1000 }));
+    t.handleEvent(ev("prompt"));
+    bubbles = null;
+    now += 6000;
+    t.tick();
+    expect(t.sessions()[0].waitingKind).toBe("inactive");
+    expect(t.dbDegraded()).toBe(true);
+
+    t.ignoreWaiting("cursor", "s1");
+    expect(t.sessions()[0].state).toBe("idle");
+    expect(t.dbDegraded()).toBe(false);
+  });
+
+  test("精确黄灯不可忽略时，不能误清除探针降级", () => {
+    const t = new SessionTracker(deps());
+    t.handleEvent(ev("prompt"));
+    t.handleEvent(ev("approval_request"));
+    bubbles = null;
+    now += 6000;
+    t.tick();
+    expect(t.dbDegraded()).toBe(true);
+
+    t.ignoreWaiting("cursor", "s1");
+    expect(t.sessions()[0].state).toBe("waiting");
+    expect(t.dbDegraded()).toBe(true);
+  });
+
+  test("降级的陈旧黄灯被冷启动清理后，橙点熄灭", () => {
+    const t = new SessionTracker(deps({ inactiveThresholdMs: 1000 }));
+    t.handleEvent(ev("prompt"));
+    bubbles = null;
+    now += 6000;
+    t.tick();
+    expect(t.dbDegraded()).toBe(true);
+
+    now += 5000;
+    t.expireStaleWaiting(10_000);
+    expect(t.sessions()[0].state).toBe("idle");
+    expect(t.dbDegraded()).toBe(false);
+  });
+
   test("冷启动回放的陈旧黄灯降级为灰点；新鲜黄灯与红灯保留", () => {
     const d = deps();
     const t = new SessionTracker(d);
@@ -1033,6 +1140,35 @@ describe("无状态 stop 终态回读（2.5）", () => {
     const s = t.sessions()[0];
     expect(s.state).toBe("waiting");
     expect(s.waitingKind).toBe("trailing_question");
+  });
+
+  test("rollout 永久不可读时，已收到 stop 的会话过宽限期应熄灯且清除探针降级", () => {
+    const d = codexDeps();
+    d.probe = () => null;
+    const t = new SessionTracker(d);
+    t.handleEvent(cev("prompt"));
+    t.handleEvent(cev("stop"));
+    now += 6000;
+    t.tick();
+    expect(t.sessions()[0].state).toBe("running");
+    expect(t.dbDegraded()).toBe(true);
+    now += 30_000;
+    t.tick();
+    expect(t.sessions()[0].state).toBe("idle");
+    expect(t.dbDegraded()).toBe(false);
+  });
+
+  test("解析失败的旧 stop 遇到新 prompt 后不得结束新一轮任务", () => {
+    const d = codexDeps();
+    d.probe = () => null;
+    const t = new SessionTracker(d);
+    t.handleEvent(cev("prompt"));
+    t.handleEvent(cev("stop"));
+    now += 1000;
+    t.handleEvent(cev("prompt"));
+    now += 36_000;
+    t.tick();
+    expect(t.sessions()[0].state).toBe("running");
   });
 
   test("resolver 未声明（deps 缺席）→ 兜底 completed", () => {

@@ -16,10 +16,57 @@ export interface StepRow {
   errorDetails: string | null;
 }
 
-export type DbReadResult = { ok: true; rows: StepRow[] } | { ok: false; reason: ReadFailure };
+export type DbReadResult = { ok: true; rows: StepRow[]; terminalError?: true } | { ok: false; reason: ReadFailure };
 
 /** 最小 schema 指纹（D34）：缺任一必需列 → schema_mismatch（fail closed，未知新增列不影响） */
 const REQUIRED_COLUMNS = ["idx", "step_type", "status", "error_details"] as const;
+
+/** 最新 executor_metadata 的 protobuf 顶层字段 12 是失败详情；只检查存在性，不解码或保存正文。 */
+function hasExecutorError(data: Uint8Array): boolean {
+  const readVarint = (start: number): { value: bigint; next: number } | null => {
+    let value = 0n;
+    for (let i = 0; i < 10 && start + i < data.length; i++) {
+      const byte = data[start + i];
+      value |= BigInt(byte & 0x7f) << BigInt(7 * i);
+      if ((byte & 0x80) === 0) return { value, next: start + i + 1 };
+    }
+    return null;
+  };
+  let offset = 0;
+  while (offset < data.length) {
+    const tag = readVarint(offset);
+    if (!tag || tag.value === 0n) return false;
+    offset = tag.next;
+    const field = Number(tag.value >> 3n);
+    const wire = Number(tag.value & 7n);
+    if (wire === 0) {
+      const value = readVarint(offset);
+      if (!value) return false;
+      offset = value.next;
+    } else if (wire === 2) {
+      const length = readVarint(offset);
+      if (!length || length.value > BigInt(data.length - length.next)) return false;
+      offset = length.next + Number(length.value);
+      if (field === 12 && length.value > 0n) return true;
+    } else if (wire === 1) {
+      offset += 8;
+    } else if (wire === 5) {
+      offset += 4;
+    } else {
+      return false;
+    }
+  }
+  return false;
+}
+
+function latestExecutorHasError(db: DatabaseSync): boolean {
+  try {
+    const row = db.prepare("SELECT data FROM executor_metadata ORDER BY idx DESC LIMIT 1").get() as { data: Uint8Array | null } | undefined;
+    return row?.data instanceof Uint8Array && hasExecutorError(row.data);
+  } catch {
+    return false; // 旧版没有 executor_metadata 表；沿用 steps 证据
+  }
+}
 
 function isPermissionError(e: unknown): boolean {
   const code = (e as NodeJS.ErrnoException)?.code;
@@ -91,7 +138,7 @@ export function readSteps(cand: { dbPath: string; hasWal: boolean }): DbReadResu
       status: Number(r.status),
       errorDetails: typeof r.error_details === "string" ? r.error_details : null,
     }));
-    return { ok: true, rows };
+    return { ok: true, rows, ...(latestExecutorHasError(db) ? { terminalError: true } : {}) };
   } catch {
     // 打开成功但查询失败：损坏/非 sqlite/锁竞争 → unreadable（调用方降级保状态，D12）
     return { ok: false, reason: "unreadable" };

@@ -5,6 +5,7 @@ import * as fs from "node:fs";
 import { discoverCandidates } from "./store-locator";
 import { readSteps, type ReadFailure } from "./db-reader";
 import { deriveObservation } from "./derive-state";
+import { discoverTranscriptSessions } from "./transcript-sessions";
 import type { AntigravitySnapshot, SessionSnapshot } from "./poller";
 
 export type AntigravityHealth = "not_detected" | "ok" | "degraded" | "schema_mismatch" | "permission_denied";
@@ -60,21 +61,49 @@ export class AntigravitySnapshotSource {
     }
     const now = this.clock();
     const sessions: SessionSnapshot[] = [];
+    const failedDbSessions = new Set<string>();
     let worst: AntigravityHealth = "ok";
     for (const cand of discoverCandidates(this.home, this.cap)) {
       const retryAt = this.nextRetryAt.get(cand.dbPath);
       if (retryAt !== undefined && now < retryAt) {
+        failedDbSessions.add(cand.sessionId);
         worst = worse(worst, "degraded"); // 退避中的库视为仍在降级
         continue;
       }
       const r = readSteps(cand); // DatabaseSync 同步读，天然一次一个库（D12）
       if (!r.ok) {
+        failedDbSessions.add(cand.sessionId);
         this.nextRetryAt.set(cand.dbPath, now + this.retryMs);
         worst = worse(worst, FAILURE_HEALTH[r.reason]);
         continue;
       }
       this.nextRetryAt.delete(cand.dbPath);
-      sessions.push({ sessionId: cand.sessionId, observation: deriveObservation(r.rows), mtime: cand.mtime, epoch: cand.ino });
+      const observation = deriveObservation(r.rows);
+      // 账户/服务异常可能把所有步骤写成 DONE；独立的 executor 错误标记优先于这种假完成。
+      const confirmedError = r.terminalError === true && observation.kind === "completed";
+      if (confirmedError) observation.kind = "error";
+      sessions.push({ sessionId: cand.sessionId, observation, mtime: cand.mtime, epoch: cand.ino, ...(confirmedError ? { confirmedError: true } : {}) });
+    }
+    // Keep the DB epoch stable while allowing a newer transcript with higher
+    // step evidence to lead: Antigravity can persist the SQLite steps ~30s late.
+    // For matching terminal evidence, use the earlier transcript write time.
+    const dbSessions = new Map(sessions.map((session) => [session.sessionId, session]));
+    for (const transcript of discoverTranscriptSessions(this.home, this.cap)) {
+      if (failedDbSessions.has(transcript.sessionId)) continue;
+      const db = dbSessions.get(transcript.sessionId);
+      if (db) {
+        const a = db.observation;
+        const b = transcript.observation;
+        if (transcript.mtime > db.mtime && b.maxIdx > a.maxIdx) {
+          db.observation = b;
+          db.mtime = transcript.mtime;
+        } else if (a.kind === b.kind && ["completed", "aborted", "error"].includes(a.kind)
+          && a.maxIdx === b.maxIdx && a.evidenceIdx === b.evidenceIdx) {
+          db.mtime = Math.min(db.mtime, transcript.mtime);
+        }
+        continue;
+      }
+      sessions.push({ sessionId: transcript.sessionId, observation: transcript.observation, mtime: transcript.mtime, epoch: transcript.ino });
     }
     this.lastHealth = worst;
     return { sessions };

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { antigravitySafeName, AntigravitySnapshotSource } from "./snapshot-source";
@@ -55,6 +55,125 @@ describe("AntigravitySnapshotSource（组合快照 + 健康 + 退避）", () => 
     expect(s.health()).toBe("ok");
   });
 
+  test("现代 brain transcript 会话即使没有 SQLite .db 也进入快照", () => {
+    const id = "d8f2cf96-3b06-479e-9003-05b6960bad10";
+    const logs = join(home, "brain", id, ".system_generated", "logs");
+    mkdirSync(logs, { recursive: true });
+    writeFileSync(join(logs, "transcript.jsonl"), [
+      JSON.stringify({ step_index: 1, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", created_at: "2026-10-14T05:00:00Z" }),
+      JSON.stringify({ step_index: 2, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", created_at: "2026-10-14T05:00:02Z" }),
+    ].join("\n"));
+
+    const snap = source().read();
+    expect(snap!.sessions.map((s) => s.sessionId)).toContain(id);
+    expect(snap!.sessions.find((s) => s.sessionId === id)?.observation).toMatchObject({ kind: "completed", maxIdx: 2 });
+  });
+
+  test("步骤均 DONE 但最新 executor_metadata 带错误字段时识别为失败", () => {
+    const id = "agent-terminated";
+    const p = makeDb(`${id}.db`, [[0, 14, 3, null], [1, 17, 3, null]]);
+    const db = new DatabaseSync(p);
+    db.exec("CREATE TABLE executor_metadata (idx INTEGER, data BLOB)");
+    const detail = Buffer.from("Account not eligible", "utf8");
+    db.prepare("INSERT INTO executor_metadata (idx, data) VALUES (?, ?)").run(1, Buffer.concat([Buffer.from([0x62, detail.length]), detail]));
+    db.close();
+
+    expect(source().read()!.sessions.find((s) => s.sessionId === id)?.observation.kind).toBe("error");
+  });
+
+  test("错误字段仍在但存在更新的运行中步骤时不提前亮红", () => {
+    const id = "retry-in-progress";
+    const p = makeDb(`${id}.db`, [[0, 17, 3, null], [1, 17, 2, null]]);
+    const db = new DatabaseSync(p);
+    db.exec("CREATE TABLE executor_metadata (idx INTEGER, data BLOB)");
+    const detail = Buffer.from("Previous attempt failed", "utf8");
+    db.prepare("INSERT INTO executor_metadata (idx, data) VALUES (?, ?)").run(0, Buffer.concat([Buffer.from([0x62, detail.length]), detail]));
+    db.close();
+
+    expect(source().read()!.sessions.find((s) => s.sessionId === id)?.observation.kind).toBe("running");
+  });
+
+  test("现代 transcript 的结构化 WAITING / RUNNING 状态被识别，正文文本不参与判断", () => {
+    const id = "modern-session";
+    const logs = join(home, "brain", id, ".system_generated", "logs");
+    mkdirSync(logs, { recursive: true });
+    writeFileSync(join(logs, "transcript.jsonl"), [
+      JSON.stringify({ step_index: 1, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE", content: "" }),
+      JSON.stringify({ step_index: 2, source: "MODEL", type: "PLANNER_RESPONSE", status: "WAITING", content: "" }),
+    ].join("\n"));
+    expect(source().read()!.sessions.find((s) => s.sessionId === id)?.observation.kind).toBe("waiting");
+  });
+
+  test("新用户输入已落盘但模型尚未写入时仍在运行，不能误判完成", () => {
+    const id = "user-turn-pending";
+    const logs = join(home, "brain", id, ".system_generated", "logs");
+    mkdirSync(logs, { recursive: true });
+    writeFileSync(join(logs, "transcript.jsonl"), [
+      JSON.stringify({ step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE" }),
+      JSON.stringify({ step_index: 2, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE" }),
+    ].join("\n"));
+
+    expect(source().read()!.sessions.find((s) => s.sessionId === id)?.observation.kind).toBe("running");
+  });
+
+  test("用户输入后的 SYSTEM/DONE 也不能在模型回复前结束任务", () => {
+    const id = "system-before-model";
+    const logs = join(home, "brain", id, ".system_generated", "logs");
+    mkdirSync(logs, { recursive: true });
+    writeFileSync(join(logs, "transcript.jsonl"), [
+      JSON.stringify({ step_index: 1, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE" }),
+      JSON.stringify({ step_index: 2, source: "SYSTEM", type: "SYSTEM_MESSAGE", status: "DONE" }),
+    ].join("\n"));
+
+    expect(source().read()!.sessions.find((s) => s.sessionId === id)?.observation.kind).toBe("running");
+  });
+
+  test("相同步骤上的 SQLite 活跃状态优先于 transcript 终态", () => {
+    const id = "same-id";
+    makeDb(`${id}.db`, [[9, 14, 2, null]]);
+    const logs = join(home, "brain", id, ".system_generated", "logs");
+    mkdirSync(logs, { recursive: true });
+    writeFileSync(join(logs, "transcript.jsonl"), JSON.stringify({ step_index: 9, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE" }));
+    const sessions = source().read()!.sessions.filter((s) => s.sessionId === id);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].observation.kind).toBe("running");
+    expect(sessions[0].observation.maxIdx).toBe(9);
+  });
+
+  test("更新且领先的 transcript 可越过滞后的 SQLite 步骤", () => {
+    const id = "transcript-ahead";
+    const dbPath = makeDb(`${id}.db`, [[0, 14, 3, null], [1, 15, 3, null]]);
+    const logs = join(home, "brain", id, ".system_generated", "logs");
+    mkdirSync(logs, { recursive: true });
+    const transcriptPath = join(logs, "transcript.jsonl");
+    writeFileSync(transcriptPath, [0, 1, 2, 3].map((idx) => JSON.stringify({ step_index: idx, status: "DONE" })).join("\n"));
+    const dbUpdatedAt = (now - 10_000) / 1000;
+    const completedAt = (now - 1_000) / 1000;
+    utimesSync(dbPath, dbUpdatedAt, dbUpdatedAt);
+    utimesSync(transcriptPath, completedAt, completedAt);
+
+    const session = source().read()!.sessions.find((s) => s.sessionId === id)!;
+    expect(session.observation).toMatchObject({ kind: "completed", maxIdx: 3 });
+    expect(session.mtime).toBeCloseTo(completedAt * 1000, 0);
+  });
+
+  test("同一步骤同一终态时，使用较早的 transcript 完成时间而非延迟更新的 DB 时间", () => {
+    const id = "same-terminal";
+    const dbPath = makeDb(`${id}.db`, [[0, 14, 3, null], [1, 15, 3, null]]);
+    const logs = join(home, "brain", id, ".system_generated", "logs");
+    mkdirSync(logs, { recursive: true });
+    const transcriptPath = join(logs, "transcript.jsonl");
+    writeFileSync(transcriptPath, [0, 1].map((idx) => JSON.stringify({ step_index: idx, status: "DONE" })).join("\n"));
+    const completedAt = (now - 10_000) / 1000;
+    const dbUpdatedAt = (now - 1_000) / 1000;
+    utimesSync(transcriptPath, completedAt, completedAt);
+    utimesSync(dbPath, dbUpdatedAt, dbUpdatedAt);
+
+    const session = source().read()!.sessions.find((s) => s.sessionId === id)!;
+    expect(session.observation).toMatchObject({ kind: "completed", maxIdx: 1 });
+    expect(session.mtime).toBeCloseTo(completedAt * 1000, 0);
+  });
+
   test("正常读取：session id 取文件名，observation/mtime/epoch 齐备", () => {
     makeDb("sess-1.db", [[0, 14, 3, null], [1, 5, 2, null]]);
     const snap = source().read();
@@ -72,6 +191,18 @@ describe("AntigravitySnapshotSource（组合快照 + 健康 + 退避）", () => 
     const s = source();
     const snap = s.read();
     expect(snap!.sessions.map((x) => x.sessionId)).toEqual(["good"]);
+    expect(s.health()).toBe("degraded");
+  });
+
+  test("同一会话的 SQLite 读取失败时，旧 transcript 不得冒充成功快照", () => {
+    const id = "broken-with-transcript";
+    writeFileSync(join(home, "conversations", `${id}.db`), "not-a-database");
+    const logs = join(home, "brain", id, ".system_generated", "logs");
+    mkdirSync(logs, { recursive: true });
+    writeFileSync(join(logs, "transcript.jsonl"), JSON.stringify({ step_index: 4, source: "MODEL", status: "DONE" }));
+
+    const s = source();
+    expect(s.read()!.sessions.some((session) => session.sessionId === id)).toBe(false);
     expect(s.health()).toBe("degraded");
   });
 

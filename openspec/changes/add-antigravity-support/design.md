@@ -597,7 +597,9 @@ This mirrors the Codex resolver path conceptually, but the parsing and redaction
 
 Real-store validation (2.2.1) shows Antigravity persists a step row only when that step finishes: an actively running trajectory can show `steps` with every row `DONE` while the current step is not represented at all. Step-status-only inference therefore cannot distinguish "all done so far, still working" from "trajectory finished".
 
-The poller MUST NOT confirm a terminal state (completed/aborted/error) while the conversation store is still being written. A terminal-looking observation whose source mtime is within a terminal quiet window (default 30s) is treated as `running`. Only after the store stays quiet beyond the window is the terminal state confirmed and `stop` emitted, using the store mtime as the stable terminal timestamp (consistent with D37).
+The poller MUST NOT confirm a terminal state (completed/aborted/error) while the conversation store is still being written. A terminal-looking observation whose source mtime is within a terminal quiet window (default 30s) is treated as `running`. Only after the store stays quiet beyond the window is the terminal state confirmed and `stop` emitted, using the store mtime as the stable terminal timestamp (consistent with D37). Transcript USER_EXPLICIT and SYSTEM records marked DONE are not terminal evidence; they only show those messages were written.
+
+Exception: a nonempty top-level executor failure field in the latest `executor_metadata` record is independent terminal evidence. Its presence (not its text) makes an otherwise completed observation an explicit error, bypasses the quiet window, and restores a fresh failure after restart. Historical failures remain silent.
 
 Consequences:
 

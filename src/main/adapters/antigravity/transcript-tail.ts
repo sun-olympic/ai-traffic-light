@@ -66,7 +66,9 @@ export function readAntigravityTranscriptTail(home: string, sessionId: string, m
     if (!lineText.trim()) continue;
     try {
       const o = JSON.parse(lineText) as Record<string, unknown>;
-      if (o.source === "assistant" && typeof o.content === "string" && o.content.trim()) last = o.content;
+      // Legacy fixtures use "assistant"; current Antigravity transcripts label
+      // planner replies as source="MODEL" (USER_EXPLICIT is the user side).
+      if ((o.source === "assistant" || o.source === "MODEL") && typeof o.content === "string" && o.content.trim()) last = o.content;
     } catch {
       /* 坏行忽略 */
     }

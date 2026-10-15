@@ -171,4 +171,24 @@ describe("scanRecentRollouts（冷启动重建）", () => {
     utimesSync(p, new Date("2026-07-04T10:00:00Z"), new Date("2026-07-04T10:00:00Z"));
     expect(scanRecentRollouts(dir, now)[0]?.sessionId).toBe("th-legacy");
   });
+
+  test("冷启动扫描识别 guardian 子代理，避免恢复成主会话无活动黄灯", () => {
+    const p = writeRollout("rollout-2026-07-04T10-00-00-th-guardian.jsonl", [
+      line("session_meta", { id: "th-guardian", source: { subagent: { other: "guardian" } } }),
+      line("event_msg", { type: "task_started" }),
+    ]);
+    utimesSync(p, new Date("2026-07-04T10:00:00Z"), new Date("2026-07-04T10:00:00Z"));
+
+    expect(scanRecentRollouts(dir, now)[0]?.isBackgroundAgent).toBe(true);
+  });
+
+  test("真实 Codex 长 session_meta 超过 4KB 时仍识别 guardian 来源", () => {
+    const p = writeRollout("rollout-2026-07-04T10-00-00-th-long-meta.jsonl", [
+      line("session_meta", { id: "th-long-meta", source: { subagent: { other: "guardian" } }, context: "x".repeat(20_000) }),
+      line("event_msg", { type: "task_started" }),
+    ]);
+    utimesSync(p, new Date("2026-07-04T10:00:00Z"), new Date("2026-07-04T10:00:00Z"));
+
+    expect(scanRecentRollouts(dir, now)[0]?.isBackgroundAgent).toBe(true);
+  });
 });

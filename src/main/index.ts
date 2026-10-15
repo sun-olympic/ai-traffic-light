@@ -550,10 +550,11 @@ async function startPipeline(): Promise<void> {
   const knownAfter = new Set(tracker.sessions().map((s) => `${s.tool}:${s.sessionId}`));
   for (const s of scanRecentRollouts(CODEX_SESSIONS_DIR)) {
     if (knownAfter.has(`codex:${s.sessionId}`)) continue;
+    if (s.isBackgroundAgent && !config.includeBackgroundAgents) continue;
     if (codexThreads.metadata(s.sessionId)?.archived) continue; // archived → 不重建（等价 removed）
     codexTranscripts.set(s.sessionId, s.transcriptPath);
     if (!admitCodexEvent({ tool: "codex", sessionId: s.sessionId, meta: {} })) continue;
-    tracker.handleEvent({ v: 2, tool: "codex", sessionId: s.sessionId, event: "session_start", ts: s.lastActiveAt, meta: {} });
+    tracker.handleEvent({ v: 2, tool: "codex", sessionId: s.sessionId, event: "session_start", ts: s.lastActiveAt, meta: { isBackgroundAgent: s.isBackgroundAgent } });
     if (s.status !== "running") {
       // ponytail: 重建的历史终态一律落灰点（unknown），不复亮红灯/结尾提问——冷启动前的旧状态用户已在 Codex 里看过
       tracker.handleEvent({ v: 2, tool: "codex", sessionId: s.sessionId, event: "stop", ts: s.lastActiveAt, meta: { status: "unknown" } });

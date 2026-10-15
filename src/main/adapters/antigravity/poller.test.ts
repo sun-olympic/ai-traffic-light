@@ -230,6 +230,50 @@ describe("episode 与 epoch（D29/D37）", () => {
 });
 
 describe("终态写静默确认（D39：活跃轨迹的 steps 全 DONE，落行只在步骤完成时发生）", () => {
+  test("执行器明确报错时无需等待 30 秒静默窗，立即发出失败 stop", () => {
+    snap = { sessions: [session("s-executor-error", "running", { maxIdx: 1, evidenceIdx: 1 })] };
+    const p = makePoller();
+    p.poll();
+    events = [];
+    snap = { sessions: [{ ...session("s-executor-error", "error", { maxIdx: 2, evidenceIdx: 2, mtime: now }), confirmedError: true }] };
+    p.poll();
+    expect(events.map((event) => [event.event, event.meta.status])).toEqual([["stop", "error"]]);
+  });
+
+  test("近期执行器明确失败在冷启动时恢复红灯，历史失败保持静默", () => {
+    snap = { sessions: [
+      { ...session("fresh-error", "error", { mtime: NOW - 60_000 }), confirmedError: true },
+      { ...session("old-error", "error", { mtime: NOW - FRESH_MS - 1 }), confirmedError: true },
+    ] };
+    makePoller().poll();
+    expect(events.map((event) => [event.sessionId, event.event, event.meta.status])).toEqual([["fresh-error", "stop", "error"]]);
+  });
+
+  test("模型步骤之间静默 6 秒不能仅凭全 DONE 判定任务完成", () => {
+    snap = { sessions: [session("s-gap", "running", { maxIdx: 3, evidenceIdx: 3 })] };
+    const p = makePoller();
+    p.poll();
+    events = [];
+    const lastWriteAt = NOW + 1000;
+    snap = { sessions: [session("s-gap", "completed", { maxIdx: 4, evidenceIdx: 4, mtime: lastWriteAt })] };
+    now = lastWriteAt + 6000;
+    p.poll();
+    expect(events.some((event) => event.event === "stop")).toBe(false);
+    expect(p.probeSnapshot("s-gap")?.terminal).toBeUndefined();
+  });
+
+  test("终态静默 30 秒后才确认结束", () => {
+    snap = { sessions: [session("s-fast", "running", { maxIdx: 3, evidenceIdx: 3 })] };
+    const p = makePoller();
+    p.poll();
+    events = [];
+    const terminalMtime = NOW + 1000;
+    snap = { sessions: [session("s-fast", "completed", { maxIdx: 5, evidenceIdx: 5, mtime: terminalMtime })] };
+    now = terminalMtime + QUIET_MS + 1;
+    p.poll();
+    expect(events.map((event) => event.event)).toEqual(["stop"]);
+  });
+
   test("基线：终态观测但库仍在写（mtime 新鲜）→ 视为 running 发 activity（真机盲区修复）", () => {
     snap = { sessions: [session("s-active", "completed", { mtime: NOW - 500 })] };
     makePoller().poll();

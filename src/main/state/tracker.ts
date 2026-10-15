@@ -67,10 +67,14 @@ interface Tracked {
   /** 外部用户操作阻塞源（如系统弹窗）归属到本会话时的 blocker key */
   externalUserActionKey: string | null;
   waitingCause: UserActionBlocker["source"] | null;
+  /** stop hook 已到但 rollout 尚未提供终态；超过宽限期后兜底结束幽灵会话 */
+  unresolvedStopAt: number | null;
 }
 
 /** tentative 提问确认期：气泡建库比弹窗展示早约 2s，短于此时长不亮黄；4s 实测偏晚 */
 const ASK_TENTATIVE_CONFIRM_MS = 2000;
+/** 留给 Codex rollout 写入终态的时间；缺失 rollout 的会话不能无限停在运行/黄灯。 */
+const UNRESOLVED_STOP_GRACE_MS = 30_000;
 
 /**
  * 作答即清后的错过提问补查窗口：清灯依据 headers（作答后 ~3s 翻转），但 accepted/自动跳过
@@ -93,8 +97,8 @@ export class SessionTracker {
   private readonly backgroundIgnored = new Set<string>();
   private readonly notified = new Set<string>();
   private readonly externalUserActionOwners = new Map<string, string>();
-  /** 按工具记录探针降级：混合会话下 Cursor DB 挂了不能被同 tick 的 Codex 探测成功掩盖 */
-  private readonly degradedTools = new Set<string>();
+  /** 按会话记录探针降级：健康的兄弟会话不能掩盖仍在降级的会话 */
+  private readonly degradedSessions = new Set<string>();
 
   constructor(deps: TrackerDeps) {
     this.deps = deps;
@@ -113,9 +117,10 @@ export class SessionTracker {
     if (ev.event === "stop" && ev.meta.status === undefined) {
       const r = this.deps.resolveStop ? this.deps.resolveStop(ev.tool, ev.sessionId, ev.meta.transcriptPath as string | undefined) : undefined;
       if (r === null) {
-        // 解析不到终态 = rollout 尚未落盘（5.1 实测：Stop hook 先于 task_complete flush 几毫秒）。
-        // 丢弃本次 stop 保持 running，D4 probe 保险丝下个 tick 会合成带完整终态与结尾文本的 stop；
-        // rollout 永久不可读的极端情况由 inactive 兜底提醒，不会红灯误报。
+        // rollout 可能只晚几毫秒，也可能永远不可读（云端 Codex 会话）。
+        // 暂时等待 probe 补齐终态，但必须保留 stop 证据以便超时清除幽灵会话。
+        const tracked = this.tracked.get(this.key(ev.tool, ev.sessionId));
+        if (tracked) tracked.unresolvedStopAt = ev.ts;
         return;
       }
       ev = { ...ev, meta: { ...ev.meta, status: r?.status ?? "completed", ...(r ? { resolvedLastMessage: r.lastAssistantMessage } : {}) } };
@@ -143,10 +148,14 @@ export class SessionTracker {
         missedCheckUntil: 0,
         externalUserActionKey: null,
         waitingCause: null,
+        unresolvedStopAt: null,
       };
       this.tracked.set(k, t);
     }
     t.note = null;
+    if (ev.event === "prompt" || ev.event === "activity" || ev.event === "before_exec" || ev.event === "after_exec" || ev.event === "stop" || ev.event === "session_end") {
+      t.unresolvedStopAt = null;
+    }
     // 任何新事件清除进行中的等待计时（审批拒绝场景 + stop 清空）
     if (ev.event !== "before_exec") t.pendingExec = null;
     // 任何事件都是活性证据：卡死计时归零（卡死只兜底 hooks 完全静默 + 气泡长期 loading 的场景，
@@ -168,6 +177,7 @@ export class SessionTracker {
     }
 
     if (ev.event === "stop") {
+      this.degradedSessions.delete(k);
       t.lastStopTs = ev.ts;
       const status = ev.meta.status;
       if (t.machine.state === "failed") {
@@ -180,7 +190,10 @@ export class SessionTracker {
       }
     }
 
-    if (t.machine.state === "removed") this.tracked.delete(k);
+    if (t.machine.state === "removed") {
+      this.tracked.delete(k);
+      this.degradedSessions.delete(k);
+    }
     this.emitTransitions(t);
   }
 
@@ -214,6 +227,7 @@ export class SessionTracker {
     for (const [k, t] of this.tracked) {
       if (now - t.machine.lastEventAt > this.config.sessionGcMs) {
         this.tracked.delete(k);
+        this.degradedSessions.delete(k);
         // 常驻进程防泄漏：会话回收时同步清掉它的提醒去重记录
         for (const e of this.notified) if (e.startsWith(`${k}:`)) this.notified.delete(e);
         continue;
@@ -230,6 +244,7 @@ export class SessionTracker {
           t.note = "tool_exited";
           t.pendingExec = null;
           t.stuckSince = null;
+          this.degradedSessions.delete(k);
         }
         continue;
       }
@@ -298,6 +313,7 @@ export class SessionTracker {
 
     if (snap === undefined) snap = this.probe(t);
     if (snap === null) {
+      if (this.finishUnresolvedStop(t, now)) return;
       // 探针通道降级：精确黄灯停用，仅保留无活动兜底
       this.judgeInactive(t, now);
       return;
@@ -315,6 +331,8 @@ export class SessionTracker {
       });
       return;
     }
+
+    if (this.finishUnresolvedStop(t, now)) return;
 
     // 作答即清后的错过提问补查：清灯时气泡尚未落盘，落盘后才能分辨 accepted 与自动跳过
     if (t.missedCheckUntil > 0) {
@@ -387,6 +405,13 @@ export class SessionTracker {
     }
   }
 
+  private finishUnresolvedStop(t: Tracked, now: number): boolean {
+    if (t.unresolvedStopAt === null || now - t.unresolvedStopAt < UNRESOLVED_STOP_GRACE_MS) return false;
+    // 已有 stop hook，但既无可读 rollout 也无终态探针。保守落 idle，不臆测完成/失败/结尾提问。
+    this.handleEvent({ v: 2, tool: t.machine.tool, sessionId: t.machine.sessionId, event: "stop", ts: now, meta: { status: "unknown", synthetic: true } });
+    return true;
+  }
+
   /**
    * 兜底判定：running 且长时间无任何事件（turn 挂起等后台任务、stop 未触发等），对用户与卡死无异，软黄灯提醒。
    * 令牌变更时刻计入基准：长思考零 hook 事件，但思考文本会分批落库（2026-07-05 实测），不算无活动
@@ -404,10 +429,10 @@ export class SessionTracker {
     const snap = this.deps.probe(m.tool, m.sessionId);
     // 随最近一次探测结果实时刷新：通道恢复（如后启动的 Cursor/Codex 建好库）后自动解除降级
     if (snap === null) {
-      this.degradedTools.add(m.tool);
+      this.degradedSessions.add(this.key(m.tool, m.sessionId));
       return null;
     }
-    this.degradedTools.delete(m.tool);
+    this.degradedSessions.delete(this.key(m.tool, m.sessionId));
     // 令牌变更 = 状态库仍在产出（思考分批落库也算）：刷新活性时刻并重置卡死计时。
     // 首次观测只建基线不计时，避免冷启动首个探测被当成活动
     if (snap.changeToken !== undefined && snap.changeToken !== t.lastToken) {
@@ -457,6 +482,7 @@ export class SessionTracker {
       this.deps.marks.set(markKey.ignore(tool, sid, t.lastStopTs), String(this.deps.clock()));
     }
     t.machine.ignoreWaiting(this.deps.clock());
+    this.degradedSessions.delete(this.key(tool, sid));
   }
 
   acknowledgeFailure(tool: string, sid: string): void {
@@ -482,6 +508,7 @@ export class SessionTracker {
       if (t.machine.state !== "waiting") continue;
       if (now - t.machine.lastEventAt < olderThanMs) continue;
       t.machine.handle({ v: 1, tool: t.machine.tool, sessionId: t.machine.sessionId, event: "stop", ts: t.machine.lastEventAt, meta: { status: "unknown" } });
+      this.degradedSessions.delete(this.key(t.machine.tool, t.machine.sessionId));
     }
   }
 
@@ -499,7 +526,9 @@ export class SessionTracker {
 
   /** 探针通道降级：指定 tool 查单通道（设置页分区显示），缺省查任一通道（灯体降级角标） */
   dbDegraded(tool?: string): boolean {
-    return tool ? this.degradedTools.has(tool) : this.degradedTools.size > 0;
+    if (!tool) return this.degradedSessions.size > 0;
+    for (const key of this.degradedSessions) if (key.startsWith(`${tool}:`)) return true;
+    return false;
   }
 
   private viewOf(tool: string, sid: string): SessionView | null {

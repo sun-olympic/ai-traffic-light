@@ -63,7 +63,7 @@ Codex 已知限制：
 
 ### Antigravity
 
-零配置、仅 macOS：App 自动发现并只读 `~/.gemini/antigravity/conversations/*.db`。非默认安装位置可用环境变量 `TL_ANTIGRAVITY_HOME` 覆盖。未安装时设置页显示「未检测到」。
+零配置、仅 macOS：App 优先只读旧版 `~/.gemini/antigravity/conversations/*.db`；新版 Antigravity 没有 SQLite 会话库时，从 `brain/<会话ID>/.system_generated/logs/transcript*.jsonl` 的结构化状态字段补充会话。消息正文不会用于推断运行/等待/错误状态；正文尾部仅按原有逻辑用于完成后的追问识别。非默认安装位置可用环境变量 `TL_ANTIGRAVITY_HOME` 覆盖。未安装时设置页显示「未检测到」。
 
 ### CodeBuddy
 

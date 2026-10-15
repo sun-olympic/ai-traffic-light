@@ -113,6 +113,7 @@ export interface ColdStartSession {
   transcriptPath: string;
   status: RolloutTail["status"];
   lastActiveAt: number;
+  isBackgroundAgent: boolean;
 }
 
 const DAY_MS = 24 * 3600_000;
@@ -131,9 +132,9 @@ export function scanRecentRollouts(sessionsDir: string, now: number = Date.now()
     const tail = readRolloutTail(p);
     if (!tail.ok) continue;
     if (tail.status !== "running" && mtime < now - DAY_MS) continue;
-    const sessionId = sessionIdOf(p);
+    const { sessionId, isBackgroundAgent } = sessionMetaOf(p);
     if (!sessionId) continue;
-    out.push({ sessionId, transcriptPath: p, status: tail.status, lastActiveAt: mtime });
+    out.push({ sessionId, transcriptPath: p, status: tail.status, lastActiveAt: mtime, isBackgroundAgent });
   }
   return out;
 }
@@ -153,20 +154,30 @@ export function latestRolloutActivityAt(sessionsDir: string, now: number = Date.
 }
 
 /** 首行 session_meta 的 id 优先、session_id 兜底、文件名再兜底（rollout-<ts>-<uuid>.jsonl） */
-function sessionIdOf(filePath: string): string | null {
+function sessionMetaOf(filePath: string): { sessionId: string | null; isBackgroundAgent: boolean } {
   try {
-    const head = fs.readFileSync(filePath, "utf-8").slice(0, 4096);
+    // 真实 Codex 的首行 session_meta 可达约 20KB；仅取 4KB 会截断 JSON，丢失子代理来源。
+    const fd = fs.openSync(filePath, "r");
+    let head: string;
+    try {
+      const buf = Buffer.alloc(64 * 1024);
+      head = buf.toString("utf-8", 0, fs.readSync(fd, buf, 0, buf.length, 0));
+    } finally {
+      fs.closeSync(fd);
+    }
     const first = head.split("\n")[0];
     const entry = JSON.parse(first);
     if (entry?.type === "session_meta") {
       const id = entry.payload?.id ?? entry.payload?.session_id;
-      if (typeof id === "string" && id) return id;
+      const source = entry.payload?.source;
+      const isBackgroundAgent = typeof source === "object" && source !== null && "subagent" in source;
+      if (typeof id === "string" && id) return { sessionId: id, isBackgroundAgent };
     }
   } catch {
     /* 落文件名兜底 */
   }
   const m = path.basename(filePath).match(/^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl$/);
-  return m ? m[1] : null;
+  return { sessionId: m ? m[1] : null, isBackgroundAgent: false };
 }
 
 /** 遍历 sessions/YYYY/MM/DD/*.jsonl；sinceMs 提供时按目录日期剪枝（目录日期粒度为天） */
