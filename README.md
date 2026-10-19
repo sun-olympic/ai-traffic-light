@@ -24,11 +24,11 @@
 
 ## 使用前准备（各工具配置）
 
-六个工具的接入成本不同：**Cursor / Codex 需要安装 hooks**（Codex 还要一次人工信任），**Qoder / Antigravity / CodeBuddy / WorkBuddy 零配置**免安装。各通道状态都在 设置页 → 对应采集区块 实时显示。
+六个工具的接入成本不同：**Cursor / Codex / Qoder 需要安装 hooks**（Codex 还要一次人工信任；Qoder 在设置页一键安装），**Antigravity / CodeBuddy / WorkBuddy 零配置**免安装。各通道状态都在 设置页 → 对应采集区块 实时显示。
 
 **通用前提**：
 
-- 系统已安装 Node.js 且 `node` 在 PATH 中——Cursor/Codex 的 hook 条目以 `node ~/.ai-traffic-light/hooks/*.cjs` 方式执行，找不到 node 时 hooks 通道静默失效（表现为设置页「最后收到事件：从未」）；Qoder/Antigravity 通道无此要求；
+- 系统已安装 Node.js 且 `node` 在 PATH 中——Cursor/Codex/Qoder 的 hook 条目以 `node ~/.ai-traffic-light/hooks/*.cjs` 方式执行，找不到 node 时 hooks 通道静默失效（Cursor/Codex 表现为设置页「最后收到事件：从未」，Qoder 则缺少 hook 推送的会话状态）；Antigravity 通道无此要求；
 - 数据目录 `~/.ai-traffic-light/`（事件文件、配置、hook 脚本）由 App 自动创建，无需手工准备；
 - macOS 首次打开需绕过 Gatekeeper（安装包未签名，见下文「打包与 Gatekeeper」）。
 
@@ -59,7 +59,7 @@ Codex 已知限制：
 
 ### Qoder
 
-零配置：App 自动只读任务快照库（macOS `~/Library/Application Support/Qoder/User/globalStorage/state.vscdb`）与本地会话记录缓存（`~/.qoder/cache`）。未安装 Qoder 时设置页显示「未检测到」，无需处理。Windows 路径按 `%APPDATA%/Qoder` 惯例推测、未经真机验证。
+两路采集：① App 自动只读任务快照库（macOS `~/Library/Application Support/Qoder/User/globalStorage/state.vscdb`）与本地会话记录缓存（`~/.qoder/cache`），零配置；② 在 设置页 → Qoder 采集 点「安装 hooks」，向 `~/.qoder/settings.json` 合并写入本工具的 hook 条目（保留你已有的配置，写入前自动备份；点「卸载 hooks」只移除本工具的条目），用于识别提问等待与新版聊天会话，需要 `node` 在 PATH 中。已安装的用户升级后无需重装；卸载后重启不会被自动写回。未安装 Qoder 时设置页显示「未检测到」，无需处理。Windows 路径按 `%APPDATA%/Qoder` 惯例推测、未经真机验证。
 
 ### Antigravity
 
@@ -83,6 +83,7 @@ Codex 已知限制：
 npm install        # 安装依赖
 npm test           # 运行单测（vitest）
 npm start          # 构建并启动
+npm run build      # 完整构建（main + renderer）；勿单独只跑 tsc -p tsconfig.main.json，会把共享的 dist/shared/widget-layout.js 还原成 CJS，悬浮窗脚本随之失效
 npm run dist       # macOS 打包（electron-builder）
 npm run dist:win   # Windows 打包（nsis/zip；需在 Windows 上执行或走 CI）
 ```

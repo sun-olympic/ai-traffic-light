@@ -94,6 +94,24 @@ describe("qoder user_action 通路", () => {
     expect(t.sessions()[0].waitingKind).toBe("user_action");
   });
 
+  test("探针 unobservable（hook 聊天会话）：不清推送黄灯，也不标记探针降级", () => {
+    const t = new SessionTracker(qoderDeps(() => ({ pending: { kind: "none" }, executing: false, stuckCandidate: false, missedQuestion: false, unobservable: true })));
+    t.handleEvent(qev("user_action_required"));
+    now += 1000;
+    t.tick();
+    expect(t.sessions()[0].waitingKind).toBe("user_action"); // 黄灯保留
+    expect(t.dbDegraded()).toBe(false); // 对照：探针返回 null 才记降级
+  });
+
+  test("探针返回 null 仍记探针降级（真降级路径不变）", () => {
+    const t = new SessionTracker(qoderDeps(() => null));
+    t.handleEvent(qev("user_action_required"));
+    now += 1000;
+    t.tick();
+    expect(t.sessions()[0].waitingKind).toBe("user_action");
+    expect(t.dbDegraded()).toBe(true);
+  });
+
   test("stop(aborted) 按能力声明不红（Stopped 任务落灰）", () => {
     const t = new SessionTracker(qoderDeps(() => null));
     t.handleEvent(qev("activity"));
@@ -190,6 +208,53 @@ describe("长时间无活动（inactive）", () => {
   });
 });
 
+describe("Cursor 快速中止后继续执行", () => {
+  test("stop(aborted) 后 275ms 同会话 prompt 不应闪红，仍为绿灯", () => {
+    const t = new SessionTracker(deps());
+    t.handleEvent(ev("prompt"));
+    now += 1000;
+    t.handleEvent(ev("stop", { status: "aborted" }));
+    expect(t.sessions()[0].state).toBe("running");
+    now += 275;
+    t.handleEvent(ev("prompt"));
+    now += 1500;
+    t.tick();
+    expect(t.sessions()[0].state).toBe("running");
+    expect(notifications.filter((n) => n.kind === "failed")).toHaveLength(0);
+  });
+
+  test("没有随后恢复事件的 Cursor aborted 仍会亮红", () => {
+    const t = new SessionTracker(deps());
+    t.handleEvent(ev("prompt"));
+    now += 1000;
+    t.handleEvent(ev("stop", { status: "aborted" }));
+    expect(t.sessions()[0].state).toBe("running");
+    now += 1001;
+    t.tick();
+    expect(t.sessions()[0].state).toBe("failed");
+    expect(notifications.filter((n) => n.kind === "failed")).toHaveLength(1);
+  });
+
+  test("aborted 后迟到的工具 activity 不能冒充新 prompt 清掉真实中止", () => {
+    const t = new SessionTracker(deps());
+    t.handleEvent(ev("prompt"));
+    now += 1000;
+    t.handleEvent(ev("stop", { status: "aborted" }));
+    now += 100;
+    t.handleEvent(ev("activity"));
+    now += 1001;
+    t.tick();
+    expect(t.sessions()[0].state).toBe("failed");
+  });
+
+  test("Cursor stop(error) 仍立即亮红，不受 aborted 缓冲影响", () => {
+    const t = new SessionTracker(deps());
+    t.handleEvent(ev("prompt"));
+    t.handleEvent(ev("stop", { status: "error" }));
+    expect(t.sessions()[0].state).toBe("failed");
+  });
+});
+
 describe("提问等待精确判定（3.2）", () => {
   test("running 静默 5s 后探测到 pending ask → waiting(question)", () => {
     const t = new SessionTracker(deps());
@@ -252,6 +317,23 @@ describe("提问等待精确判定（3.2）", () => {
 });
 
 describe("错过提问标记（3.2a）", () => {
+  test("已归档 Cursor 会话即使留下 pending 提问气泡也从黄灯移除", () => {
+    let archived = false;
+    const t = new SessionTracker({
+      ...deps(),
+      probe: () => ({ pending: { kind: "question_pending" }, executing: false, stuckCandidate: false, missedQuestion: false, sessionArchived: archived }),
+    });
+    t.handleEvent(ev("prompt"));
+    now += 6000;
+    t.tick();
+    expect(t.sessions()[0].waitingKind).toBe("question");
+    archived = true;
+    now += 2000;
+    t.tick();
+    expect(t.sessions()).toHaveLength(0);
+    expect(t.aggregate().counts.waiting).toBe(0);
+  });
+
   test("提问等待中气泡翻转非 accepted → 打标记并提醒，状态不滞留", () => {
     const t = new SessionTracker(deps());
     t.handleEvent(ev("prompt"));
@@ -294,6 +376,25 @@ describe("错过提问标记（3.2a）", () => {
     now += 2000;
     t.tick();
     expect(t.sessions()[0].missedQuestion).toBe(false);
+  });
+
+  test("Cursor 作答分批落盘：submitted 先于 accepted 到达时不留下黄圈或红灯", () => {
+    const t = new SessionTracker(deps());
+    t.handleEvent(ev("prompt"));
+    bubbles = PENDING_ASK;
+    now += 6000;
+    t.tick();
+    bubbles = [bubble({ toolName: "ask_question", status: "completed", userDecision: null, additionalStatus: "submitted", result: '{"answers":[{"questionId":"q1","selectedOptionIds":["a"]}]}' })];
+    now += 2000;
+    t.tick();
+    expect(t.sessions()[0].state).toBe("running");
+    expect(t.sessions()[0].missedQuestion).toBe(false);
+    bubbles = ANSWERED_ASK;
+    now += 2000;
+    t.tick();
+    expect(t.sessions()[0].missedQuestion).toBe(false);
+    expect(t.aggregate().counts.failed).toBe(0);
+    expect(notifications.filter((n) => n.kind === "missed_question")).toHaveLength(0);
   });
 
   test("标记可清除且持久化", () => {
@@ -716,11 +817,15 @@ describe("多会话聚合（3.4）", () => {
     t.handleEvent(ev("prompt"));
     const stopEv = ev("stop", { status: "aborted" });
     t.handleEvent(stopEv);
+    now += 1001;
+    t.tick();
     expect(t.aggregate().color).toBe("red");
     t.acknowledgeFailure("cursor", "s1");
     expect(t.aggregate().color).toBe("off");
     t.handleEvent(ev("prompt"));
     t.handleEvent(stopEv); // 冷启动回放同一 stop
+    now += 1001;
+    t.tick();
     expect(t.aggregate().color).toBe("off");
   });
 
@@ -1184,6 +1289,8 @@ describe("无状态 stop 终态回读（2.5）", () => {
     const t = new SessionTracker(deps());
     t.handleEvent(ev("prompt"));
     t.handleEvent(ev("stop", { status: "aborted" }));
+    now += 1001;
+    t.tick();
     expect(t.sessions()[0].state).toBe("failed");
   });
 });

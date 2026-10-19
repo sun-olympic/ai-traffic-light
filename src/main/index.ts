@@ -67,6 +67,8 @@ const CODEX_DIR = path.join(os.homedir(), ".codex");
 const CODEX_SESSIONS_DIR = path.join(CODEX_DIR, "sessions");
 const codexInstaller = new CodexHooksInstaller({ appHome: APP_HOME, codexDir: CODEX_DIR });
 const qoderHooksInstaller = new QoderHooksInstaller({ appHome: APP_HOME, qoderDir: QODER_DIR });
+/** Qoder hooks 状态：settings.json 损坏等读取错误只体现在 detail，不让健康页整体失败 */
+const qoderHooksStatus = () => qoderHooksInstaller.status().catch((error: Error) => ({ installed: false, detail: error.message }));
 const codexThreads = new CodexThreadsReader(CODEX_DIR);
 /** codex 会话 → rollout 路径缓存（事件 meta 的 transcriptPath，probe/resolver 定位用） */
 const codexTranscripts = new Map<string, string>();
@@ -223,7 +225,7 @@ const tracker = new SessionTracker({
             ? agyPoller.probeSnapshot(sessionId)
             : tool === "workbuddy"
               ? workbuddyPoller.probeSnapshot(sessionId)
-              : snapshotFromBubbles(reader.isAvailable() ? reader.latestBubbles(sessionId, 6) : null, reader.composerHeader(sessionId)),
+              : snapshotFromBubbles(reader.isAvailable() ? reader.latestBubbles(sessionId, 6) : null, reader.composerHeader(sessionId), reader.archivedStatus(sessionId)),
   externalUserAction: () => systemDialogPoller.activeBlocker(),
   resolveStop: (tool, sessionId, transcriptPath) =>
     tool === "codex" ? resolveCodexStop(CODEX_SESSIONS_DIR, sessionId, transcriptPath ?? codexRolloutPath(sessionId)) : null,
@@ -620,6 +622,16 @@ function registerIpc(): void {
     else if (op === "uninstall") await codexInstaller.uninstall();
     return codexHealth();
   });
+  // Qoder hooks：与 Cursor/Codex 一致，首次安装走设置页显式触发；失败时把原因带回 detail 供设置页展示
+  ipcMain.handle("qoderHooks", async (_e, op: string) => {
+    try {
+      if (op === "install") await qoderHooksInstaller.install();
+      else if (op === "uninstall") await qoderHooksInstaller.uninstall();
+    } catch (error) {
+      return { ok: false, installed: false, detail: (error as Error).message };
+    }
+    return { ok: true, ...(await qoderHooksStatus()) };
+  });
   // 一键打开终端预填 codex 启动命令，用户在 TUI 内跑 /hooks 完成信任（App 无法代跑，design D6）
   ipcMain.handle("codexTrust:terminal", () => {
     const cmd = codexCliCommand();
@@ -639,7 +651,7 @@ function registerIpc(): void {
     cursorAlive: isToolAlive("cursor"),
     codex: await codexHealth(),
     // qoder 三态健康（add-qoder-support D9）：not_detected 中性不告警
-    qoder: { state: qoderReader.health(), alive: isToolAlive("qoder") },
+    qoder: { state: qoderReader.health(), alive: isToolAlive("qoder"), hooks: await qoderHooksStatus() },
     // antigravity 多态健康（add-antigravity-support D14/D24）：app 与后端分层
     antigravity: { state: agySource.health(), alive: isToolAlive("antigravity"), backendAlive: isToolAlive("antigravity_backend") },
     codebuddy: { state: codebuddyReader.health(), alive: isToolAlive("codebuddy") },
@@ -691,14 +703,14 @@ if (!app.requestSingleInstanceLock()) {
     else if (await installer.everInstalled()) await installer.install(enabledHookEvents());
     // codex 同理：脚本内容刷新不破坏信任（哈希只锁 hooks.json 条目定义）
     if ((await codexInstaller.status()).installed) await codexInstaller.ensureFresh();
-    // Qoder 支持 settings.json hooks；只在已存在 Qoder 配置目录时合并安装，保留用户已有设置。
+    // Qoder 同 Cursor/Codex：首次安装走设置页（用户显式触发，卸载后不会被写回）；已安装/曾安装才在启动时刷新/补齐。
+    // 只在已存在 Qoder 配置目录时处理，避免给未安装 Qoder 的用户凭空创建 ~/.qoder。
     if (fs.existsSync(QODER_DIR)) {
       try {
-        const qoderHookStatus = await qoderHooksInstaller.status();
-        if (qoderHookStatus.installed) await qoderHooksInstaller.ensureFresh();
-        else await qoderHooksInstaller.install();
+        if ((await qoderHooksInstaller.status()).installed) await qoderHooksInstaller.ensureFresh();
+        else if (await qoderHooksInstaller.everInstalled()) await qoderHooksInstaller.install();
       } catch (error) {
-        console.warn("[qoder-hooks] unable to install status hooks:", error);
+        console.warn("[qoder-hooks] unable to refresh status hooks:", error);
       }
     }
     await startPipeline();

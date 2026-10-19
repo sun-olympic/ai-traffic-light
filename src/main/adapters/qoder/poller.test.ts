@@ -197,11 +197,12 @@ describe("probeSnapshot（探针通路）", () => {
     expect(ps?.pending.kind).toBe("user_action_pending");
   });
 
-  test("任务缺失返回中性快照（不误标降级）；读取失败返回 null（真降级）", () => {
+  test("任务缺失返回中性快照（不误标降级）；hook 聊天 UUID 返回 unobservable；读取失败返回 null（真降级）", () => {
     snap = { tasks: [] };
     poller.poll();
     expect(poller.probeSnapshot("ghost")?.pending.kind).toBe("none");
-    expect(poller.probeSnapshot("3e7e3c58-6e3e-48b1-9038-6cc5c8fd1c14")).toBeNull();
+    expect(poller.probeSnapshot("ghost")?.unobservable).toBeUndefined();
+    expect(poller.probeSnapshot("3e7e3c58-6e3e-48b1-9038-6cc5c8fd1c14")).toMatchObject({ unobservable: true });
     snap = null;
     expect(poller.probeSnapshot("ghost")).toBeNull();
   });

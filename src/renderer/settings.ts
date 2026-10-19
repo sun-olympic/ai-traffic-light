@@ -49,6 +49,7 @@ const I18N: Record<string, Record<string, string>> = {
     qd_degraded: "快照读取降级（库不可读或结构变化），自动重试中",
     qd_alive: "Qoder 运行中",
     qd_dead: "Qoder 未运行",
+    qd_hooks_hint: "安装 hooks 后可识别 Qoder 的提问等待与新版聊天会话：会合并写入 ~/.qoder/settings.json（写入前自动备份，不动你已有的钩子），需要 PATH 中有 node；卸载只移除本工具的条目。",
     sec_antigravity: "Antigravity 采集",
     ag_not_detected: "未检测到（未安装 Antigravity 时无需处理）",
     ag_ok: "会话库读取正常",
@@ -120,6 +121,7 @@ const I18N: Record<string, Record<string, string>> = {
     qd_degraded: "Snapshot degraded (DB unreadable or schema changed), retrying",
     qd_alive: "Qoder running",
     qd_dead: "Qoder not running",
+    qd_hooks_hint: "Install hooks to detect Qoder question waits and new chat sessions: merged into ~/.qoder/settings.json (backed up first, your existing hooks are kept); requires node in PATH; uninstall removes only this tool's entries.",
     sec_antigravity: "Antigravity collector",
     ag_not_detected: "Not detected (nothing to do if Antigravity is not installed)",
     ag_ok: "Conversation store readable",
@@ -145,6 +147,7 @@ const I18N: Record<string, Record<string, string>> = {
 };
 
 let lang = "zh";
+let qoderActionError = "";
 
 function applyI18n(): void {
   document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
@@ -207,6 +210,7 @@ async function refreshHealth(): Promise<void> {
   renderCodex(h.codex);
   renderCodebuddy(h.codebuddy);
   renderQoder(h.qoder);
+  document.getElementById("qoder-action-error")!.textContent = qoderActionError;
   renderAntigravity(h.antigravity);
   renderWorkbuddy(h.workbuddy);
 }
@@ -216,6 +220,8 @@ function renderQoder(q: QoderHealthView): void {
   const L = I18N[lang];
   const stateText = { not_detected: L.qd_not_detected, ok: L.qd_ok, degraded: L.qd_degraded }[q.state];
   const rows = [`<div class="${q.state === "degraded" ? "bad" : q.state === "ok" ? "ok" : ""}">${stateText}</div>`];
+  // hooks 通道独立于快照库：新版 Qoder 可能没有旧快照库（state=not_detected），hooks 是唯一来源，所以始终展示
+  rows.push(`<div class="${q.hooks.installed ? "ok" : ""}">${q.hooks.installed ? L.h_hooks_ok : L.h_hooks_bad}${q.hooks.detail ? `: ${q.hooks.detail}` : ""}</div>`);
   if (q.state !== "not_detected") rows.push(`<div>${q.alive ? L.qd_alive : L.qd_dead}</div>`);
   document.getElementById("qoder-health")!.innerHTML = rows.join("");
 }
@@ -302,6 +308,16 @@ async function init(): Promise<void> {
   document.getElementById("codex-uninstall")!.onclick = async () => {
     codexJustInstalled = false;
     renderCodex(await tl.codexHooks("uninstall"));
+  };
+  document.getElementById("qoder-install")!.onclick = async () => {
+    const result = await tl.qoderHooks("install");
+    qoderActionError = result.ok ? "" : result.detail ?? "";
+    await refreshHealth();
+  };
+  document.getElementById("qoder-uninstall")!.onclick = async () => {
+    const result = await tl.qoderHooks("uninstall");
+    qoderActionError = result.ok ? "" : result.detail ?? "";
+    await refreshHealth();
   };
   document.getElementById("codex-trust-terminal")!.onclick = () => void tl.codexTrustTerminal();
 }

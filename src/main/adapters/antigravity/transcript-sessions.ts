@@ -20,6 +20,8 @@ export interface TranscriptSession {
   mtime: number;
   ino: number;
   observation: ReturnType<typeof deriveObservation>;
+  /** 最高 step_index 的记录是已完成且不带 tool_calls 的 PLANNER_RESPONSE（最终回复，D40） */
+  finalReply: boolean;
 }
 
 function latestTranscript(home: string, sessionId: string): string | null {
@@ -40,7 +42,7 @@ function latestTranscript(home: string, sessionId: string): string | null {
   }
 }
 
-function readStructuralRows(p: string): StepRow[] {
+function readStructuralRows(p: string): { rows: StepRow[]; finalReply: boolean } {
   try {
     const st = fs.statSync(p);
     const start = Math.max(0, st.size - MAX_TAIL_BYTES);
@@ -53,6 +55,8 @@ function readStructuralRows(p: string): StepRow[] {
     } finally { fs.closeSync(fd); }
     if (start > 0) text = text.slice(text.indexOf("\n") + 1);
     const rows: StepRow[] = [];
+    let lastIdx = -1;
+    let finalReply = false;
     for (const line of text.split("\n")) {
       try {
         const item = JSON.parse(line) as Record<string, unknown>;
@@ -62,12 +66,19 @@ function readStructuralRows(p: string): StepRow[] {
           // 用户与系统消息的 DONE 只表示消息已写入，不表示模型已完成这一轮。
           const nonModelMessage = item.source === "USER_EXPLICIT" || item.source === "SYSTEM";
           rows.push({ idx: idx as number, stepType: 0, status: nonModelMessage && status === STATUS.DONE ? STATUS.RUNNING : status, errorDetails: null });
+          if ((idx as number) >= lastIdx) {
+            lastIdx = idx as number;
+            // D40：带 tool_calls 的回复后一定还有工具步骤；tool_calls 缺失/null/空数组才算最终回复，形状异常一律保守当作还没结束
+            const tc = item.tool_calls;
+            const noTools = tc === undefined || tc === null || (Array.isArray(tc) && tc.length === 0);
+            finalReply = status === STATUS.DONE && item.source === "MODEL" && item.type === "PLANNER_RESPONSE" && noTools;
+          }
         }
       } catch { /* ignore incomplete/malformed JSON lines */ }
     }
-    return rows;
+    return { rows, finalReply };
   } catch {
-    return [];
+    return { rows: [], finalReply: false };
   }
 }
 
@@ -90,9 +101,9 @@ export function discoverTranscriptSessions(home: string, cap = 20): TranscriptSe
   candidates.sort((a, b) => b.mtime - a.mtime);
   const found: TranscriptSession[] = [];
   for (const candidate of candidates.slice(0, cap)) {
-    const rows = readStructuralRows(candidate.transcriptPath);
+    const { rows, finalReply } = readStructuralRows(candidate.transcriptPath);
     if (!rows.length) continue;
-    found.push({ ...candidate, observation: deriveObservation(rows) });
+    found.push({ ...candidate, observation: deriveObservation(rows), finalReply });
   }
   return found;
 }

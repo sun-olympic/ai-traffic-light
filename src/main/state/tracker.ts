@@ -73,6 +73,8 @@ interface Tracked {
 
 /** tentative 提问确认期：气泡建库比弹窗展示早约 2s，短于此时长不亮黄；4s 实测偏晚 */
 const ASK_TENTATIVE_CONFIRM_MS = 2000;
+/** Cursor 回答 AskQuestion 等继续执行时会先报 aborted，再于数百毫秒内报同会话 prompt。 */
+const CURSOR_ABORT_GRACE_MS = 1000;
 /** 留给 Codex rollout 写入终态的时间；缺失 rollout 的会话不能无限停在运行/黄灯。 */
 const UNRESOLVED_STOP_GRACE_MS = 30_000;
 
@@ -99,6 +101,8 @@ export class SessionTracker {
   private readonly externalUserActionOwners = new Map<string, string>();
   /** 按会话记录探针降级：健康的兄弟会话不能掩盖仍在降级的会话 */
   private readonly degradedSessions = new Set<string>();
+  /** Cursor aborted 的短暂缓冲：同会话立即收到新 prompt 时不制造红→绿闪烁；真实中止超时照常亮红。 */
+  private readonly pendingCursorAborts = new Map<string, TrafficEvent>();
 
   constructor(deps: TrackerDeps) {
     this.deps = deps;
@@ -113,6 +117,26 @@ export class SessionTracker {
   }
 
   handleEvent(ev: TrafficEvent): void {
+    const key = this.key(ev.tool, ev.sessionId);
+    const pending = this.pendingCursorAborts.get(key);
+    if (pending) {
+      const gap = ev.ts - pending.ts;
+      const soonAfter = gap >= 0 && gap < CURSOR_ABORT_GRACE_MS;
+      if (soonAfter && (ev.event === "prompt" || ev.event === "stop" || ev.event === "session_end")) {
+        this.pendingCursorAborts.delete(key);
+      } else if (!soonAfter) {
+        this.pendingCursorAborts.delete(key);
+        this.applyEvent(pending);
+      }
+    }
+    if (ev.tool === "cursor" && ev.event === "stop" && ev.meta.status === "aborted") {
+      this.pendingCursorAborts.set(key, ev);
+      return;
+    }
+    this.applyEvent(ev);
+  }
+
+  private applyEvent(ev: TrafficEvent): void {
     // 无状态 stop（codex）：终态解析器补齐 status 后再走既有 stop 分支
     if (ev.event === "stop" && ev.meta.status === undefined) {
       const r = this.deps.resolveStop ? this.deps.resolveStop(ev.tool, ev.sessionId, ev.meta.transcriptPath as string | undefined) : undefined;
@@ -220,6 +244,11 @@ export class SessionTracker {
   /** 周期驱动（建议 2~5s 一次）：GC、存活检测、黄灯探测、卡死计时 */
   tick(): void {
     const now = this.deps.clock();
+    for (const [key, pending] of this.pendingCursorAborts) {
+      if (now - pending.ts < CURSOR_ABORT_GRACE_MS) continue;
+      this.pendingCursorAborts.delete(key);
+      this.applyEvent(pending);
+    }
     const externalAction = this.deps.externalUserAction?.() ?? null;
     if (!externalAction) this.externalUserActionOwners.clear();
     const externalOwnerKey = externalAction ? this.resolveExternalUserActionOwner(externalAction) : null;
@@ -312,10 +341,15 @@ export class SessionTracker {
     if (!needProbe) return;
 
     if (snap === undefined) snap = this.probe(t);
-    if (snap === null) {
+    if (snap === null || snap.unobservable) {
       if (this.finishUnresolvedStop(t, now)) return;
-      // 探针通道降级：精确黄灯停用，仅保留无活动兜底
+      // 探针通道降级（null）或对该会话不可观测（unobservable，不记降级）：精确黄灯停用，仅保留无活动兜底
       this.judgeInactive(t, now);
+      return;
+    }
+
+    if (snap.sessionArchived) {
+      this.handleEvent({ v: 1, tool: m.tool, sessionId: m.sessionId, event: "session_end", ts: now, meta: { synthetic: true } });
       return;
     }
 

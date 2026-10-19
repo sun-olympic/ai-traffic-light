@@ -608,6 +608,21 @@ Consequences:
 - Long tool steps (no DB writes beyond the window) may prematurely confirm completion and then revive as a new episode when the next row lands; this is an accepted v1 trade-off, and the window is an explicit constant.
 - The probe path applies the same rule so a probe terminal fuse cannot clear a session the poller still considers running.
 
+### D40. Final-reply fast path shortens the quiet window
+
+D39's 30s window delays the green light going out by ~30s after every finished turn (measured 31.6s on a real session). Real transcripts (12 sessions, 61 turns, structure only) expose an end-of-turn marker: a `MODEL`/`PLANNER_RESPONSE` record that carries `tool_calls` is never the end of a turn (618 such records: 615 followed by a tool step, 3 by a system record), while 57 of 61 turns (93%) end with a `PLANNER_RESPONSE` without `tool_calls` (the final reply). After such a reply the agent kept working in only 3 of 84 cases, 3-4s later by `created_at` deltas (a lower bound of the persisted gap, since a step row is persisted when it finishes).
+
+When the highest-`step_index` transcript record is a completed `MODEL`/`PLANNER_RESPONSE` whose `tool_calls` is absent, null, or an empty array, the session carries `finalReply`. For such a session whose structural observation is `completed`, the poller uses `min(terminalQuietMs, finalReplyQuietMs)` (default 10s) instead of the 30s window. Everything else keeps the 30s window: the last record is a tool step, a reply with tool calls, or a user/system message; the ending is aborted/error; the session is DB-only; `tool_calls` has an unexpected shape; or the record is a legacy `source=assistant` one. Message text is still never read.
+
+Merge rule (snapshot source): `finalReply` is taken from the transcript only when the transcript observation is the one in use (it leads the DB), or when DB and transcript agree on the same terminal evidence (same kind, `maxIdx`, `evidenceIdx`). A DB that is ahead of the transcript never inherits it.
+
+Consequences:
+
+- The green light goes out ~10-12s after the final reply is persisted (was ~32s); baseline, diff, and probe all use the same effective window.
+- Long tool steps and slow model steps are unaffected: while the last record is a tool step or a tool-calling reply, the 30s window applies as before.
+- Residual risk: an interim text-only reply followed by more work within 10s emits an early `stop(completed)` and revives as a new episode when the next row lands (same accepted class as D39).
+- If a future transcript schema moves tool calls out of `tool_calls`, every reply would look final and the effective window degrades to 10s; the `tool_calls` shape tests are the tripwire. D26 trajectory-level decode remains the exact upgrade path.
+
 ## State Mapping
 
 | Evidence | Normalized event/probe | Lamp state | Confidence |

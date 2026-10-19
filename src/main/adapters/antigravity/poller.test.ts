@@ -6,6 +6,7 @@ import type { SessionStateKind } from "./derive-state";
 const NOW = 1_800_000_000_000;
 const FRESH_MS = 600_000;
 const QUIET_MS = 30_000;
+const FINAL_QUIET_MS = 10_000;
 /** 已过写静默窗口的终态 mtime（D39：只有静默后的终态才被确认） */
 const STALE = NOW - QUIET_MS - 1000;
 
@@ -30,6 +31,7 @@ function makePoller(): AntigravityPoller {
     clock: () => now,
     freshWaitingMs: FRESH_MS,
     terminalQuietMs: QUIET_MS,
+    finalReplyQuietMs: FINAL_QUIET_MS,
     transcriptTail: () => tailText,
   });
 }
@@ -64,6 +66,16 @@ describe("启动基线（D20/D31）", () => {
     snap = { sessions: [session("s-old-wait", "waiting", { mtime: NOW - FRESH_MS - 1 })] };
     makePoller().poll();
     expect(events).toEqual([]);
+  });
+
+  test("陈旧 running（超出新鲜窗口）基线静默，但保留高水位供后续 diff（D31）", () => {
+    snap = { sessions: [session("s-old-run", "running", { mtime: NOW - FRESH_MS - 1, maxIdx: 3, evidenceIdx: 3 })] };
+    const p = makePoller();
+    p.poll();
+    expect(events).toEqual([]);
+    snap = { sessions: [session("s-old-run", "running", { mtime: NOW - 500, maxIdx: 4, evidenceIdx: 4 })] };
+    p.poll();
+    expect(events.map((e) => e.event)).toEqual(["activity"]);
   });
 
   test("基线 waiting 事件时间戳用 mtime（跨重启稳定，D37）", () => {
@@ -272,6 +284,56 @@ describe("终态写静默确认（D39：活跃轨迹的 steps 全 DONE，落行�
     now = terminalMtime + QUIET_MS + 1;
     p.poll();
     expect(events.map((event) => event.event)).toEqual(["stop"]);
+  });
+
+  test("最终回复（D40）：窗口内仍视为 running，静默满 10 秒即确认完成，不必等满 30 秒", () => {
+    snap = { sessions: [session("s-final", "running", { maxIdx: 3, evidenceIdx: 3 })] };
+    const p = makePoller();
+    p.poll();
+    events = [];
+    const replyAt = NOW + 1000;
+    snap = { sessions: [{ ...session("s-final", "completed", { maxIdx: 4, evidenceIdx: 4, mtime: replyAt }), finalReply: true }] };
+    now = replyAt + FINAL_QUIET_MS - 1;
+    p.poll();
+    expect(events.map((event) => event.event)).toEqual(["activity"]);
+    events = [];
+    now = replyAt + FINAL_QUIET_MS;
+    p.poll();
+    expect(events.map((event) => [event.event, event.meta.status, event.ts])).toEqual([["stop", "completed", replyAt]]);
+  });
+
+  test("非最终回复收尾（无 finalReply 标记）：静默 10 秒仍不确认，维持 30 秒窗口", () => {
+    snap = { sessions: [session("s-tool", "running", { maxIdx: 3, evidenceIdx: 3 })] };
+    const p = makePoller();
+    p.poll();
+    const lastWriteAt = NOW + 1000;
+    snap = { sessions: [session("s-tool", "completed", { maxIdx: 4, evidenceIdx: 4, mtime: lastWriteAt })] };
+    now = lastWriteAt + FINAL_QUIET_MS;
+    p.poll();
+    expect(events.some((event) => event.event === "stop")).toBe(false);
+    expect(p.probeSnapshot("s-tool")?.terminal).toBeUndefined();
+    events = [];
+    now = lastWriteAt + QUIET_MS;
+    p.poll();
+    expect(events.map((event) => event.event)).toEqual(["stop"]);
+  });
+
+  test("最终回复快速通道对 probe 同样生效：窗口内 executing，静默后 terminal 保险丝", () => {
+    const replyAt = NOW + 1000;
+    snap = { sessions: [{ ...session("s-probe", "completed", { mtime: replyAt }), finalReply: true }] };
+    const p = makePoller();
+    now = replyAt + FINAL_QUIET_MS - 1;
+    p.poll();
+    expect(p.probeSnapshot("s-probe")?.executing).toBe(true);
+    now = replyAt + FINAL_QUIET_MS;
+    p.poll();
+    expect(p.probeSnapshot("s-probe")?.terminal?.status).toBe("completed");
+  });
+
+  test("基线：最终回复静默满 10 秒视为历史终态，重启后不亮绿", () => {
+    snap = { sessions: [{ ...session("s-hist", "completed", { mtime: NOW - FINAL_QUIET_MS }), finalReply: true }] };
+    makePoller().poll();
+    expect(events).toEqual([]);
   });
 
   test("基线：终态观测但库仍在写（mtime 新鲜）→ 视为 running 发 activity（真机盲区修复）", () => {

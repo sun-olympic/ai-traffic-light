@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CursorDbReader } from "./db-reader";
@@ -172,6 +172,29 @@ describe("CursorDbReader", () => {
     expect(reader.composerHeader("c1")).toBeNull();
     expect(reader.latestBubbles("c1", 1)).toHaveLength(1); // 气泡通路不受影响
     expect(reader.isAvailable()).toBe(true);
+    reader.close();
+  });
+
+  test("会话搜索索引明确标记已归档时可识别，未归档和缺失记录不误判", () => {
+    seed([]);
+    const search = new DatabaseSync(join(dbPath, "../conversation-search.db"));
+    search.exec("CREATE TABLE conversations (source TEXT, scope TEXT, id TEXT, is_archived INTEGER)");
+    search.exec("INSERT INTO conversations VALUES ('local', '', 'archived', 1), ('local', '', 'active', 0)");
+    search.close();
+    const reader = new CursorDbReader(dbPath);
+    const archivedStatus = Reflect.get(reader, "archivedStatus") as ((id: string) => boolean | null) | undefined;
+    expect(archivedStatus?.call(reader, "archived")).toBe(true);
+    expect(archivedStatus?.call(reader, "active")).toBe(false);
+    expect(archivedStatus?.call(reader, "missing")).toBeNull();
+    reader.close();
+  });
+
+  test("搜索索引尚未建立时不凭旧气泡推断归档，也不创建数据库", () => {
+    seed([]);
+    const reader = new CursorDbReader(dbPath);
+    const archivedStatus = Reflect.get(reader, "archivedStatus") as ((id: string) => boolean | null) | undefined;
+    expect(archivedStatus?.call(reader, "c1")).toBeNull();
+    expect(existsSync(join(dbPath, "../conversation-search.db"))).toBe(false);
     reader.close();
   });
 

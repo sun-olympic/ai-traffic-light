@@ -52,6 +52,8 @@ export type MissedReason = "dismissed" | "unanswered";
 
 /** 工具无关的探针快照（v2 探针通路）：判定器下沉 adapter 内部，tracker 只消费此结构 */
 export interface ProbeSnapshot {
+  /** 会话已在工具中归档：旧气泡可能仍为 pending，但不应继续亮灯。 */
+  sessionArchived?: boolean;
   /** 挂起等待判定（提问/审批/无） */
   pending: ProbeResult;
   /** 明确执行中（排除审批启发式误报） */
@@ -74,6 +76,11 @@ export interface ProbeSnapshot {
    * probe 读 rollout 尾行发现终态时带回）；tracker 据此注入合成 stop 事件。
    */
   terminal?: StopResolution;
+  /**
+   * 本通道对该会话无可观测数据（非降级）：tracker 不据此清灯/判终态，也不标记探针降级，
+   * 只走无活动兜底（如 Qoder hook 聊天会话不在旧任务快照里，黄灯由 hook 推送）。
+   */
+  unobservable?: boolean;
 }
 
 /** 无状态 stop 的终态解析结果（design.md D4）：resolver 必须同时带回结尾文本，结尾提问判定不走 Cursor transcript 解析器 */

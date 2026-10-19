@@ -3,7 +3,7 @@ import path from "node:path";
 
 export const QODER_HOOK_EVENTS = [
   "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse",
-  "PostToolUseFailure", "Stop", "StopFailure", "QueryEnd", "SessionEnd",
+  "PostToolUseFailure", "Stop", "StopFailure", "SessionEnd",
 ] as const;
 
 const SCRIPT_NAME = "qoder-collect.cjs";
@@ -45,8 +45,12 @@ export class QoderHooksInstaller {
     }
   }
 
+  private isOurHook(hook: HookEntry): boolean {
+    return hook.command === this.command();
+  }
+
   private isOurs(group: HookGroup): boolean {
-    return (group.hooks ?? []).some((hook) => typeof hook.command === "string" && hook.command.includes(path.join(this.appHome, "hooks")));
+    return (group.hooks ?? []).some((hook) => this.isOurHook(hook));
   }
 
   private async copyScript(): Promise<void> {
@@ -78,7 +82,11 @@ export class QoderHooksInstaller {
       await fs.access(this.settingsPath);
       const settings = await this.readSettings();
       for (const event of Object.keys(settings.hooks ?? {})) {
-        settings.hooks![event] = (settings.hooks![event] ?? []).filter((group) => !this.isOurs(group));
+        settings.hooks![event] = (settings.hooks![event] ?? []).flatMap((group) => {
+          if (!this.isOurs(group)) return [group];
+          const hooks = group.hooks!.filter((hook) => !this.isOurHook(hook));
+          return hooks.length ? [{ ...group, hooks }] : [];
+        });
         if (settings.hooks![event].length === 0) delete settings.hooks![event];
       }
       await fs.writeFile(this.settingsPath, JSON.stringify(settings, null, 2) + "\n", { mode: 0o600 });
@@ -94,6 +102,16 @@ export class QoderHooksInstaller {
     if (missing.length) return { installed: false, detail: `缺失事件条目: ${missing.join(", ")}` };
     try { await fs.access(this.scriptPath); } catch { return { installed: false, detail: "采集脚本缺失" }; }
     return { installed: true };
+  }
+
+  /** 曾经安装过（采集脚本存在）：显式卸载会删脚本，所以卸载后重启不会被写回；升级时据此补齐新增事件条目 */
+  async everInstalled(): Promise<boolean> {
+    try {
+      await fs.access(this.scriptPath);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async ensureFresh(): Promise<void> {

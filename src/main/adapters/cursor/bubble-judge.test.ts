@@ -89,6 +89,16 @@ describe("judgeMissedQuestion（3.2a：提问结束挂起时检查 userDecision 
     expect(judgeMissedQuestion(rows)).toBeNull();
   });
 
+  test("答案已 submitted 但 userDecision 尚未落盘 → 不误标未作答", () => {
+    const rows = [row({ toolName: "ask_question", status: "completed", userDecision: null, additionalStatus: "submitted", result: '{"answers":[{"questionId":"q1","selectedOptionIds":["a"]}]}' })];
+    expect(judgeMissedQuestion(rows)).toBeNull();
+  });
+
+  test("submitted 后决策尚未落盘，即使答案暂为空也等待最终判定", () => {
+    const rows = [row({ toolName: "ask_question", status: "completed", userDecision: null, additionalStatus: "submitted", result: '{"answers":[]}' })];
+    expect(judgeMissedQuestion(rows)).toBeNull();
+  });
+
   test("表单被意外关闭（2026-07-06 实测事故样本）：accepted+submitted 但 result 只剩 Other 占位无文本 → dismissed", () => {
     const rows = [
       row({
@@ -194,6 +204,11 @@ describe("snapshotFromBubbles（2.3：气泡行 → 工具无关快照）", () =
   test("过期 ask 快照：missedQuestion=true", () => {
     const snap = snapshotFromBubbles([row({ toolName: "ask_question", status: "completed", additionalStatus: "expired" })]);
     expect(snap?.missedQuestion).toBe(true);
+  });
+
+  test("归档信号优先于残留 pending 气泡透传给状态机", () => {
+    const snap = snapshotFromBubbles([row({ toolName: "ask_question", status: "completed", additionalStatus: "pending" })], null, true);
+    expect(snap?.sessionArchived).toBe(true);
   });
 });
 

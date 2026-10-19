@@ -33,6 +33,7 @@
 
 - [x] 7.0.1 Add poller terminal quiet window (D39): terminal-looking observation with fresh store mtime is treated as running (baseline lights green, diff emits activity, no premature stop/red); terminal confirmed and stop emitted only after mtime quiescence; probe path downgraded consistently
 - [x] 7.0.2 Panel displays interface-sourced session title (user decision, Qoder precedent): bounded read of `agyhub_summaries_proto.pb` id→title map with mtime cache; panel name = title, fallback safe name; notifications keep safe short-id name; title never persisted/logged
+- [x] 7.0.3 Add final-reply fast path (D40): transcript's highest-step record being a completed `PLANNER_RESPONSE` without `tool_calls` shortens the terminal quiet window to 10s (green light goes out ~10-12s after the final reply instead of ~32s); other endings keep 30s; baseline/diff/probe share the effective window
 
 ## 8. Verification
 

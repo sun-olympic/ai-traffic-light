@@ -66,9 +66,12 @@ export function readAntigravityTranscriptTail(home: string, sessionId: string, m
     if (!lineText.trim()) continue;
     try {
       const o = JSON.parse(lineText) as Record<string, unknown>;
-      // Legacy fixtures use "assistant"; current Antigravity transcripts label
-      // planner replies as source="MODEL" (USER_EXPLICIT is the user side).
-      if ((o.source === "assistant" || o.source === "MODEL") && typeof o.content === "string" && o.content.trim()) last = o.content;
+      // 只认助手对用户的回复：旧 fixture 为 source="assistant"；现行 transcript 为 source="MODEL" 且 type="PLANNER_RESPONSE"。
+      // 其余 MODEL 记录（RUN_COMMAND/VIEW_FILE…）的 content 是工具输出，不是回复，不能进尾问判定。
+      if (o.source === "assistant" || (o.source === "MODEL" && o.type === "PLANNER_RESPONSE")) {
+        // 末条回复正文为空 → 置 null，不回退更早文本（D38：不确定即跳过）
+        if (typeof o.content === "string") last = o.content.trim() ? o.content : null;
+      }
     } catch {
       /* 坏行忽略 */
     }

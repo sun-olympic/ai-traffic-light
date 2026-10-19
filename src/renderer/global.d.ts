@@ -12,6 +12,7 @@ interface CodexHealth {
 interface QoderHealthView {
   state: "not_detected" | "ok" | "degraded";
   alive: boolean;
+  hooks: { installed: boolean; detail?: string };
 }
 
 interface AntigravityHealthView {
@@ -39,6 +40,7 @@ interface TlGlobalApi {
   setConfig(partial: Record<string, unknown>): Promise<Record<string, unknown>>;
   hooks(op: string): Promise<{ installed: boolean; detail?: string }>;
   codexHooks(op: string): Promise<CodexHealth>;
+  qoderHooks(op: string): Promise<{ ok: boolean; installed: boolean; detail?: string }>;
   codexTrustTerminal(): Promise<{ command: string }>;
   health(): Promise<{
     hooks: { installed: boolean; detail?: string };

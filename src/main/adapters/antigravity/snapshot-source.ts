@@ -97,13 +97,15 @@ export class AntigravitySnapshotSource {
         if (transcript.mtime > db.mtime && b.maxIdx > a.maxIdx) {
           db.observation = b;
           db.mtime = transcript.mtime;
+          if (transcript.finalReply) db.finalReply = true; // 终态证据来自 transcript 末条（D40）
         } else if (a.kind === b.kind && ["completed", "aborted", "error"].includes(a.kind)
           && a.maxIdx === b.maxIdx && a.evidenceIdx === b.evidenceIdx) {
           db.mtime = Math.min(db.mtime, transcript.mtime);
+          if (transcript.finalReply) db.finalReply = true; // DB 追上后仍是同一条最终回复
         }
         continue;
       }
-      sessions.push({ sessionId: transcript.sessionId, observation: transcript.observation, mtime: transcript.mtime, epoch: transcript.ino });
+      sessions.push({ sessionId: transcript.sessionId, observation: transcript.observation, mtime: transcript.mtime, epoch: transcript.ino, ...(transcript.finalReply ? { finalReply: true } : {}) });
     }
     this.lastHealth = worst;
     return { sessions };

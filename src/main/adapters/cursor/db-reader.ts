@@ -48,6 +48,7 @@ const REOPEN_RETRY_MS = 30_000;
 
 export class CursorDbReader {
   private db: DatabaseSync | null = null;
+  private searchDb: DatabaseSync | null = null;
   private available = true;
   private nextRetryAt = 0;
   private readonly dbPath: string;
@@ -116,6 +117,19 @@ export class CursorDbReader {
     }
   }
 
+  /** Cursor 会话搜索索引的归档标记；库/记录缺失时返回 null，不凭旧气泡猜测。 */
+  archivedStatus(sessionId: string): boolean | null {
+    try {
+      this.searchDb ??= new DatabaseSync(path.join(path.dirname(this.dbPath), "conversation-search.db"), { readOnly: true });
+      const row = this.searchDb.prepare("SELECT is_archived FROM conversations WHERE source = 'local' AND scope = '' AND id = ? LIMIT 1").get(sessionId) as { is_archived: number } | undefined;
+      return row ? row.is_archived === 1 : null;
+    } catch {
+      try { this.searchDb?.close(); } catch { /* 索引通道可选，关闭失败不影响气泡通道 */ }
+      this.searchDb = null;
+      return null;
+    }
+  }
+
   sessionMetadata(sessionId: string): SessionMeta | null {
     const db = this.handle();
     if (!db) return null;
@@ -146,6 +160,8 @@ export class CursorDbReader {
   close(): void {
     this.db?.close();
     this.db = null;
+    this.searchDb?.close();
+    this.searchDb = null;
   }
 
   /** 仅供测试验证只读性 */

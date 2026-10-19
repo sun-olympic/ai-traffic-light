@@ -248,3 +248,64 @@ describe("AntigravitySnapshotSource（组合快照 + 健康 + 退避）", () => 
     expect(s.health()).toBe("ok");
   });
 });
+
+describe("最终回复标记 finalReply（D40：末条是无 tool_calls 的 PLANNER_RESPONSE）", () => {
+  const user = (idx: number) => ({ step_index: idx, source: "USER_EXPLICIT", type: "USER_INPUT", status: "DONE" });
+  const planner = (idx: number, extra: Record<string, unknown> = {}) => ({ step_index: idx, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", ...extra });
+  const tool = (idx: number) => ({ step_index: idx, source: "MODEL", type: "RUN_COMMAND", status: "DONE" });
+
+  function writeTranscript(id: string, records: object[]): string {
+    const logs = join(home, "brain", id, ".system_generated", "logs");
+    mkdirSync(logs, { recursive: true });
+    const p = join(logs, "transcript.jsonl");
+    writeFileSync(p, records.map((r) => JSON.stringify(r)).join("\n"));
+    return p;
+  }
+  const finalReplyOf = (id: string) => source().read()!.sessions.find((s) => s.sessionId === id)?.finalReply;
+
+  test.each<[string, object[], true | undefined]>([
+    ["典型回合收尾：工具步骤之后的最终回复", [user(1), planner(2, { tool_calls: [{}] }), tool(3), planner(4)], true],
+    ["tool_calls 为空数组也算最终回复", [user(1), planner(2, { tool_calls: [] })], true],
+    ["tool_calls 为 null 也算最终回复", [user(1), planner(2, { tool_calls: null })], true],
+    ["末条回复带 tool_calls：后面必有工具步骤，不是最终回复", [user(1), planner(2, { tool_calls: [{}] })], undefined],
+    ["末条是工具步骤", [user(1), planner(2, { tool_calls: [{}] }), tool(3)], undefined],
+    ["末条是用户输入（新一轮刚开始）", [user(1), planner(2), user(3)], undefined],
+    ["tool_calls 形状异常 → 保守当作还没结束", [user(1), planner(2, { tool_calls: "x" })], undefined],
+    ["末条回复未完成（RUNNING）", [user(1), planner(2, { status: "RUNNING" })], undefined],
+    ["旧格式 source=assistant 不走快速通道", [user(1), { step_index: 2, source: "assistant", status: "DONE" }], undefined],
+  ])("%s", (_name, records, expected) => {
+    const id = "final-reply-case";
+    writeTranscript(id, records);
+    expect(finalReplyOf(id)).toBe(expected);
+  });
+
+  test("DB 滞后、transcript 领先时，finalReply 随 transcript 观测传递", () => {
+    const id = "lag-final";
+    const dbPath = makeDb(`${id}.db`, [[0, 14, 3, null], [1, 15, 3, null]]);
+    const transcriptPath = writeTranscript(id, [user(0), planner(1, { tool_calls: [{}] }), tool(2), planner(3)]);
+    utimesSync(dbPath, (now - 10_000) / 1000, (now - 10_000) / 1000);
+    utimesSync(transcriptPath, (now - 1_000) / 1000, (now - 1_000) / 1000);
+    expect(finalReplyOf(id)).toBe(true);
+  });
+
+  test("DB 追上同一条终态后仍保留 finalReply，并使用较早的 transcript 时间", () => {
+    const id = "caught-up-final";
+    const dbPath = makeDb(`${id}.db`, [[0, 14, 3, null], [1, 15, 3, null]]);
+    const transcriptPath = writeTranscript(id, [user(0), planner(1)]);
+    const repliedAt = (now - 10_000) / 1000;
+    utimesSync(transcriptPath, repliedAt, repliedAt);
+    utimesSync(dbPath, (now - 1_000) / 1000, (now - 1_000) / 1000);
+    const session = source().read()!.sessions.find((s) => s.sessionId === id)!;
+    expect(session.finalReply).toBe(true);
+    expect(session.mtime).toBeCloseTo(repliedAt * 1000, 0);
+  });
+
+  test("DB 步骤领先于 transcript 时不继承 finalReply", () => {
+    const id = "db-ahead";
+    const dbPath = makeDb(`${id}.db`, [[0, 14, 3, null], [1, 15, 3, null], [2, 15, 3, null]]);
+    const transcriptPath = writeTranscript(id, [user(0), planner(1)]);
+    utimesSync(dbPath, (now - 10_000) / 1000, (now - 10_000) / 1000);
+    utimesSync(transcriptPath, (now - 1_000) / 1000, (now - 1_000) / 1000);
+    expect(finalReplyOf(id)).toBeUndefined();
+  });
+});

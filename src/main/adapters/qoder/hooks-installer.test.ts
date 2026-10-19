@@ -41,6 +41,32 @@ describe("Qoder hooks installer", () => {
     for (const event of QODER_HOOK_EVENTS) expect(JSON.stringify(settings.hooks[event] ?? [])).not.toContain(appHome);
   });
 
+  test("uninstall preserves user hooks sharing a group with our hook", async () => {
+    await installer.install();
+    const p = join(qoderDir, "settings.json");
+    const settings = JSON.parse(readFileSync(p, "utf8"));
+    settings.hooks.Stop[0].hooks.push({ type: "command", command: "user-hook" });
+    const customCommand = `node "${join(appHome, "hooks", "custom.cjs")}"`;
+    settings.hooks.Stop[0].hooks.push({ type: "command", command: customCommand });
+    writeFileSync(p, JSON.stringify(settings));
+
+    await installer.uninstall();
+
+    const remaining = JSON.parse(readFileSync(p, "utf8"));
+    expect(remaining.hooks.Stop).toEqual([{ hooks: [
+      { type: "command", command: "user-hook" },
+      { type: "command", command: customCommand },
+    ] }]);
+  });
+
+  test("everInstalled：安装后为 true，显式卸载后为 false（启动时据此不把已卸载的 hooks 写回）", async () => {
+    expect(await installer.everInstalled()).toBe(false);
+    await installer.install();
+    expect(await installer.everInstalled()).toBe(true);
+    await installer.uninstall();
+    expect(await installer.everInstalled()).toBe(false);
+  });
+
   test("uninstall before installation does not create settings.json", async () => {
     await installer.uninstall();
     expect(existsSync(join(qoderDir, "settings.json"))).toBe(false);

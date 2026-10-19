@@ -17,8 +17,8 @@ function logsDir(sessionId: string): string {
 }
 
 // 全合成行（spec：Fixtures are sanitized）：content 只是占位问句/文本
-function line(source: string, content: unknown): string {
-  return JSON.stringify({ type: "message", status: "DONE", source, step_index: 1, created_at: 1, content });
+function line(source: string, content: unknown, type = "message"): string {
+  return JSON.stringify({ type, status: "DONE", source, step_index: 1, created_at: 1, content });
 }
 
 describe("readAntigravityTranscriptTail（D38 有界尾部解析）", () => {
@@ -38,9 +38,28 @@ describe("readAntigravityTranscriptTail（D38 有界尾部解析）", () => {
     const d = logsDir("model-source");
     writeFileSync(join(d, "transcript.jsonl"), [
       line("USER_EXPLICIT", "Please ask me a question."),
-      line("MODEL", "Do you prefer coffee or tea?"),
+      line("MODEL", "Do you prefer coffee or tea?", "PLANNER_RESPONSE"),
     ].join("\n"));
     expect(readAntigravityTranscriptTail(home, "model-source")).toBe("Do you prefer coffee or tea?");
+  });
+
+  test("MODEL 的工具步骤输出不是助手回复：末条为含问号的工具输出时仍取前一条 Planner 回复", () => {
+    const d = logsDir("model-tool-tail");
+    writeFileSync(join(d, "transcript.jsonl"), [
+      line("MODEL", "Done.", "PLANNER_RESPONSE"),
+      line("MODEL", "Deploying to prod. Do you want to continue?", "RUN_COMMAND"),
+    ].join("\n"));
+    expect(readAntigravityTranscriptTail(home, "model-tool-tail")).toBe("Done.");
+  });
+
+  test("末条 Planner 回复正文为空 → null，不回退更早的文本（D38：不确定即跳过）", () => {
+    const d = logsDir("model-empty-tail");
+    writeFileSync(join(d, "transcript.jsonl"), [
+      line("MODEL", "Shall I proceed?", "PLANNER_RESPONSE"),
+      line("MODEL", "tool output", "VIEW_FILE"),
+      line("MODEL", "", "PLANNER_RESPONSE"),
+    ].join("\n"));
+    expect(readAntigravityTranscriptTail(home, "model-empty-tail")).toBeNull();
   });
 
   test("无 assistant 行 / content 非字符串 → null（保守，D38）", () => {

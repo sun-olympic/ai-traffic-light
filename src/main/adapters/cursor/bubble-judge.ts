@@ -67,6 +67,9 @@ export function judgeMissedQuestion(rows: BubbleRow[]): MissedReason | null {
   if (!b || b.toolName !== ASK_QUESTION_TOOL) return null;
   const stillPending = b.additionalStatus === PENDING_ADDITIONAL_STATUS || (b.status === "loading" && b.additionalStatus === null);
   if (stillPending) return null;
+  // Cursor 作答会先写 submitted/result，再延迟写 userDecision=accepted。
+  // 此时 decision 为空只是落盘间隙，不能永久标记为“未作答”。
+  if (b.additionalStatus === "submitted" && b.userDecision === null) return null;
   if (b.userDecision !== DECISION_ACCEPTED) return "unanswered";
   if (isEmptyAskResult(b.result)) return "dismissed";
   return null;
@@ -91,11 +94,12 @@ export function judgeExecuting(rows: BubbleRow[]): boolean {
 }
 
 /** Cursor 探针通路出口：气泡行 → 工具无关快照；null（DB 不可用）原样透传为降级信号 */
-export function snapshotFromBubbles(rows: BubbleRow[] | null, header?: ComposerHeader | null): ProbeSnapshot | null {
+export function snapshotFromBubbles(rows: BubbleRow[] | null, header?: ComposerHeader | null, archived: boolean | null = null): ProbeSnapshot | null {
   if (rows === null) return null;
   const top = rows[0];
   const missedReason = judgeMissedQuestion(rows);
   return {
+    ...(archived === true ? { sessionArchived: true } : {}),
     pending: judgePending(rows),
     executing: judgeExecuting(rows),
     stuckCandidate: judgeStuck(rows),

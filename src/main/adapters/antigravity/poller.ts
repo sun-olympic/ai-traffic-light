@@ -14,6 +14,8 @@ export interface SessionSnapshot {
   epoch: number;
   /** 独立执行器元数据明确标记的失败，可绕过步骤写入静默窗。 */
   confirmedError?: boolean;
+  /** transcript 末条是不带 tool_calls 的最终回复（D40）：用更短的静默窗确认完成 */
+  finalReply?: boolean;
 }
 
 export interface AntigravitySnapshot {
@@ -25,13 +27,18 @@ export interface AntigravityPollerDeps {
   read: () => AntigravitySnapshot | null;
   emit: (ev: TrafficEvent) => void;
   clock: () => number;
-  /** 基线时 waiting 视为"新鲜可恢复"的窗口（D31）；超窗静默防陈旧黄灯复活 */
+  /** 基线时 running/waiting/确认失败视为"新鲜可恢复"的窗口（D31）；超窗静默防陈旧会话复活 */
   freshWaitingMs?: number;
   /**
    * 终态写静默确认窗口（D39）：Antigravity 只在步骤完成时落行，活跃轨迹的 steps 可能全 DONE；
    * 库 mtime 仍在窗口内的终态观测视为 running，静默超窗后才确认终态
    */
   terminalQuietMs?: number;
+  /**
+   * 最终回复快速通道的静默窗口（D40）：末条记录是不带 tool_calls 的最终回复时替代 terminalQuietMs
+   * （取两者较小值，快速通道只会缩短不会拉长）。其余终态观测仍用 terminalQuietMs
+   */
+  finalReplyQuietMs?: number;
   /** 结构完成后的有界 transcript 尾部文本（D38）；null = 无安全尾部，跳过尾问 */
   transcriptTail?: (sessionId: string) => string | null;
 }
@@ -48,6 +55,9 @@ const DEFAULT_FRESH_WAITING_MS = 600_000;
 // 当前步骤未落盘时无法与真正完成区分；保留 30s 静默窗，避免长模型步骤间隙提前发 stop。
 // 升级路径是 D26 的 trajectory 级结构解码（waiting_steps/fully_idle）取代 mtime 静默启发式
 const DEFAULT_TERMINAL_QUIET_MS = 30_000;
+// D40：末条是无 tool_calls 的最终回复时回合已基本结束（真机 transcript：84 次最终回复后仅 3 次又继续，间隔 ≤4s），
+// 用 10s 窗口确认完成，绿灯熄灭从约 32s 降到约 10~12s。残余风险：文字消息后继续干活会短暂熄灯再复亮（同 D39 已接受的取舍）
+const DEFAULT_FINAL_REPLY_QUIET_MS = 10_000;
 
 const TERMINAL_STATUS: Partial<Record<SessionStateKind, StopResolution["status"]>> = {
   completed: "completed",
@@ -73,7 +83,8 @@ export class AntigravityPoller {
     const obs = s.observation;
     if (obs.kind === "error" && s.confirmedError) return obs;
     if (!(obs.kind in TERMINAL_STATUS)) return obs;
-    const quiet = this.deps.terminalQuietMs ?? DEFAULT_TERMINAL_QUIET_MS;
+    let quiet = this.deps.terminalQuietMs ?? DEFAULT_TERMINAL_QUIET_MS;
+    if (s.finalReply && obs.kind === "completed") quiet = Math.min(quiet, this.deps.finalReplyQuietMs ?? DEFAULT_FINAL_REPLY_QUIET_MS);
     if (this.deps.clock() - s.mtime < quiet) return { ...obs, kind: "running" };
     return obs;
   }
@@ -99,16 +110,18 @@ export class AntigravityPoller {
     // 会话从快照消失：不发事件（消失≠完成，D13）；seen 保留以便重现时 diff 仍成立
   }
 
-  /** 首轮基线与基线后新会话（D20）：running 恢复绿灯，新鲜 waiting 恢复黄灯，历史终态/unknown 静默 */
+  /** 首轮基线与基线后新会话（D20/D31）：只恢复新鲜的 running 绿灯 / waiting 黄灯 / 确认失败，历史终态/unknown/超窗一律静默 */
   private baseline(s: SessionSnapshot): void {
     this.remember(s);
+    // 超窗（含 transcript 兜底把末尾用户消息映射出的 running）静默：remember 已留高水位，后续真实写入仍走 diff
+    if (this.deps.clock() - s.mtime > (this.deps.freshWaitingMs ?? DEFAULT_FRESH_WAITING_MS)) return;
     const kind = s.observation.kind;
     if (kind === "running") {
       this.emit(s.sessionId, "activity", this.deps.clock(), {});
-    } else if (kind === "error" && s.confirmedError && this.deps.clock() - s.mtime <= (this.deps.freshWaitingMs ?? DEFAULT_FRESH_WAITING_MS)) {
+    } else if (kind === "error" && s.confirmedError) {
       // 近期、明确的执行器失败在重启后仍应可见；历史失败不重新告警。
       this.emitStop(s, kind);
-    } else if (kind === "waiting" && this.deps.clock() - s.mtime <= (this.deps.freshWaitingMs ?? DEFAULT_FRESH_WAITING_MS)) {
+    } else if (kind === "waiting") {
       // ts 用 mtime：跨重启同一等待的通知 episode 键稳定（D37）
       this.emit(s.sessionId, "user_action_required", s.mtime, {});
     }

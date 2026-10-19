@@ -78,12 +78,20 @@ The system SHALL normalize Antigravity structural step status (`CortexStepStatus
 - **THEN** the system prefers trajectory-level structural state over the last row
 
 #### Scenario: Fresh terminal-looking store is in progress
-- **WHEN** the structural state looks terminal (all steps DONE, or a trailing error/cancel row) but the store mtime is within the 30-second terminal quiet window
+- **WHEN** the structural state looks terminal (all steps DONE, or a trailing error/cancel row) but the store mtime is within the terminal quiet window (30 seconds; 10 seconds for a final reply, see below)
 - **THEN** the session is treated as running because Antigravity only persists steps on completion and the active step is not visible
 
 #### Scenario: Terminal state is confirmed after write quiescence
-- **WHEN** a terminal-looking structural state persists and the store mtime has been quiet beyond the 30-second terminal quiet window
+- **WHEN** a terminal-looking structural state persists and the store mtime has been quiet beyond the terminal quiet window
 - **THEN** the system confirms the terminal state and emits the corresponding stop with the store mtime as its stable timestamp
+
+#### Scenario: Final reply confirms completion after a shorter quiet window
+- **WHEN** the highest-step transcript record is a completed model planner response without tool calls (a final reply), the structural state is completed, and the store mtime has been quiet for 10 seconds
+- **THEN** the system confirms completion without waiting for the full 30-second window
+
+#### Scenario: Records that are not a final reply keep the full quiet window
+- **WHEN** the latest transcript record is a tool step, a planner response that carries tool calls, a user or system message, or has an unexpected `tool_calls` shape
+- **THEN** the 30-second terminal quiet window still applies
 
 ### Requirement: Antigravity Exact Yellow
 The system SHALL enter exact waiting with kind `user_action` only on current structural waiting evidence, never from historical metadata or free text.
@@ -153,6 +161,10 @@ The system SHALL use bounded Antigravity transcript reads for trailing-question 
 #### Scenario: SQLite remains authoritative unless a newer transcript has later steps
 - **WHEN** both a legacy SQLite store and a transcript exist for the same session
 - **THEN** the SQLite observation takes precedence at the same step index, but a newer transcript with a higher step index may lead while SQLite writes lag
+
+#### Scenario: Matching terminal evidence uses the earlier timestamp
+- **WHEN** SQLite and transcript report the same terminal state at the same step
+- **THEN** the earlier of the two write times is the terminal timestamp
 
 #### Scenario: Stop events carry no transcript path
 - **WHEN** the system emits an Antigravity stop event
